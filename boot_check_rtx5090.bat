@@ -58,7 +58,7 @@ if exist "%ZDIR%" (
     for %%f in ("%ZDIR%\*.safetensors") do set /a N+=1
     echo    Checkpoints Z-Image ^(%ZDIR%^) : !N!
 ) else (
-    echo    [INFO] %ZDIR% introuvable (regle checkpoints_dir dans config.txt).
+    echo    [INFO] %ZDIR% introuvable ^(regle checkpoints_dir dans config.txt^).
 )
 echo.
 
