@@ -1105,6 +1105,7 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
                  esrgan_model, do_esrgan, do_refine, refine_first, factor, denoise, refine_steps,
                  tile, overlap, refine_tile, refine_overlap,
                  save_mode, output_dir, output_format, history,
+                 auto_upscale=False,
                  progress=gr.Progress(track_tqdm=True)):
     """Bouton Generate unifie facon Fooocus. Renvoie 4 sorties:
     (images du run, report, history_state, history_gallery). L'historique accumule
@@ -1222,17 +1223,29 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
                 _log(f"random style #{i + 1}: {chosen}")
             img, t = txt2img_run(fp, width, height, gen_steps, s, fn,
                                  upscale=False, steps=refine_steps)
-            images.append(img)
             total_t += t["txt2img"]
+            tag, gmode = "txt2img", "txt2img"
+            # Chainage optionnel: upscale (ESRGAN + refine) sur l'image generee, sans
+            # action manuelle. Reutilise le meme pipeline que l'onglet Upscale/img2img.
+            if auto_upscale:
+                progress((i + 0.5) / n, desc=f"Upscaling {i + 1}/{n}")
+                eff_denoise = float(denoise) if do_refine else 0.0
+                img, ut = process_one(
+                    img, esrgan_model, factor, eff_denoise, refine_steps, fp, s,
+                    tile, overlap, refine_tile=refine_tile, refine_overlap=refine_overlap,
+                    do_esrgan=bool(do_esrgan), refine_first=bool(refine_first))
+                total_t += ut.get("esrgan", 0.0) + ut.get("refine", 0.0)
+                tag, gmode = "upscaled", "txt2img+upscale"
+            images.append(img)
             dst = None
             if save_mode != "display":
                 try:
                     dst = build_output_path(None, save_mode, output_dir, output_format,
-                                            tag="txt2img", seed=s, size=img.size,
+                                            tag=tag, seed=s, size=img.size,
                                             index=(i + 1 if n > 1 else 0))
                     if dst:
                         save_image(img, dst, output_format, meta=_gen_meta(
-                            "txt2img", fp, fn, s, gen_steps, cz_pipeline.GUIDANCE,
+                            gmode, fp, fn, s, gen_steps, cz_pipeline.GUIDANCE,
                             img.size, styles=chosen))
                         _dbg(f"saved: {dst}")
                 except Exception as e:
@@ -1243,7 +1256,8 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
         if not images:
             return _done([], "Stopped before any image.")
         suffix = " (stopped)" if cz_pipeline._STOP else ""
-        rep = (f"txt2img x{len(images)} - **{images[0].size[0]}x{images[0].size[1]}** "
+        _label = "txt2img+upscale" if auto_upscale else "txt2img"
+        rep = (f"{_label} x{len(images)} - **{images[0].size[0]}x{images[0].size[1]}** "
                f"in **{total_t:.1f}s**{suffix}")
         return _done(images, rep, img_paths)
     finally:
@@ -1329,6 +1343,11 @@ def build_ui():
                     with gr.Column(scale=1, min_width=150):
                         btn = gr.Button("Generate", elem_id="cz_generate", min_width=150)
                         stop_btn = gr.Button("Stop", variant="stop", size="sm", min_width=150)
+                        auto_upscale_cb = gr.Checkbox(
+                            value=bool(CONFIG.get("default_auto_upscale", False)),
+                            label="Upscale after generate", min_width=150,
+                            info="Chain each txt2img image through the Upscale tab "
+                                 "pipeline (ESRGAN + refine), no manual step.")
 
                 negative = gr.Textbox(show_label=False, value=CONFIG.get("default_negative_prompt", ""),
                                       elem_id="cz_neg", lines=1, container=False,
@@ -1660,8 +1679,10 @@ def build_ui():
                                                   label="Blur thumbnails (NSFW)")
                             ab_gen_thumbs = gr.Checkbox(value=bool(_ab_get("generate_thumbnails")),
                                                         label="Generate thumbnails")
-                        ab_reindex_btn = gr.Button("Rebuild ALL thumbnails (force) + open link",
-                                                   variant="primary", size="sm")
+                        with gr.Row():
+                            ab_open_btn = gr.Button("\U0001F5BC️ Open Asset Browser",
+                                                    variant="primary", size="sm")
+                            ab_reindex_btn = gr.Button("Rebuild ALL thumbnails (force)", size="sm")
                         ab_open_link = gr.HTML("")
                         ab_status = gr.Markdown("")
 
@@ -1704,6 +1725,9 @@ def build_ui():
         ab_reindex_btn.click(_ui_ab_reindex,
                              [output_dir, ab_thumb_size, ab_quality, ab_blur, ab_gen_thumbs],
                              [ab_open_link, ab_status])
+        # Open Asset Browser in a new tab (fast: manifest now, thumbnails in background).
+        ab_open_btn.click(_ui_gallery_open, [output_dir], [ab_status, gallery_url]).then(
+            None, [gallery_url], None, js="(u) => { if (u) window.open(u, '_blank'); }")
         log_level_dd.change(set_log_level, [log_level_dd], [log_level_status])
         detect_btn.click(_ui_detect_ollama, [ollama_url], [ollama_model, ollama_status])
         describe_btn.click(_ui_describe, [describe_img, ollama_model, ollama_url], [prompt, describe_status])
@@ -1747,7 +1771,7 @@ def build_ui():
                        width, height, gen_steps, image_number,
                        seed, guidance, offload, esrgan, do_esrgan_cb, do_refine_cb, refine_first_cb, factor, denoise, refine_steps,
                        tile, overlap, refine_tile, refine_overlap, save_mode, output_dir, output_format,
-                       history]
+                       history, auto_upscale_cb]
         _gen_outputs = [out, report, history, history_gallery]
         btn.click(_ui_generate, inputs=_gen_inputs, outputs=_gen_outputs)
         # Clic sur une image du resultat -> bouton Download avec le vrai nom de fichier.

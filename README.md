@@ -6,7 +6,9 @@
 A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
 
-- **Text → Image** (`ZImagePipeline`): generate from a prompt, optionally upscale.
+- **Text → Image** (`ZImagePipeline`): generate from a prompt, with an optional
+  **Upscale after generate** toggle (under the Generate button) that auto-chains each
+  image through the ESRGAN + refine pipeline — no manual step.
 - **Image → Upscale** (the crispz pipeline): Real-ESRGAN + Z-Image refine, 4K tiling.
 - **Inpaint** (paint a mask → regenerate the area) and **Reframe / Outpaint** (expand
   to a new aspect ratio).
