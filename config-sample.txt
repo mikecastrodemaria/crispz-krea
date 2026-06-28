@@ -12,26 +12,29 @@
     "_improve_local_keywords_help": "Quality tags appended by 'Improve prompt' when no Ollama model is selected (local rule-based fallback, no model).",
 
     "performance_presets": {
-        "Turbo (8 steps)": [8, 0.0],
-        "Quality (20 steps)": [20, 0.0],
-        "Base CFG (28 steps)": [28, 4.0]
+        "Fast (20 steps)": [20, 4.5],
+        "Krea (28 steps)": [28, 4.5],
+        "Detail (36 steps)": [36, 4.5]
     },
     "model_profiles": {
-        "turbo": {"steps": 8, "guidance": 0.0},
-        "juggernaut": {"steps": 28, "guidance": 6.0},
-        "base": {"steps": 24, "guidance": 4.0}
+        "krea": {"steps": 28, "guidance": 4.5},
+        "flux": {"steps": 28, "guidance": 3.5},
+        "schnell": {"steps": 4, "guidance": 0.0}
     },
-    "default_model_profile": {"steps": 8, "guidance": 0.0},
+    "default_model_profile": {"steps": 28, "guidance": 4.5},
 
     "default_prompt": "",
     "default_negative_prompt": "",
     "default_styles": [],
     "default_aspect_ratio": "1024 x 1024  (1:1)",
-    "default_performance": "Turbo (8 steps)",
+    "default_performance": "Krea (28 steps)",
     "default_width": 1024,
     "default_height": 1024,
-    "default_gen_steps": 8,
-    "default_guidance": 0.0,
+    "default_gen_steps": 28,
+    "default_guidance": 4.5,
+    "_default_guidance_help": "FLUX.1 Krea [dev] is guidance-distilled: 3.5-5.0 recommended (not 0).",
+    "flux_true_cfg": 4.0,
+    "_flux_true_cfg_help": "Real CFG scale used ONLY when a negative prompt is set (Flux ignores negatives otherwise). >1 enables it (doubles cost); 1.0 disables.",
     "default_sampler": "euler",
     "default_schedule": "sgm_uniform",
     "default_image_number": 1,

@@ -1,14 +1,19 @@
-"""crispz-studio - coeur Z-Image (diffusers, BF16): chargement des pipelines
-(txt2img / img2img / inpaint / omni), LoRA / checkpoints / transformer, generation
+"""crispz-krea - coeur FLUX.1 Krea [dev] (diffusers, BF16): chargement des pipelines
+(txt2img / img2img / inpaint), LoRA / checkpoints / transformer, generation
 et orchestration (generate / txt2img_run / process_one / outpaint / inpaint) + l'etat
 mutable runtime (modele courant, caches pipe, offload, guidance, stop/progress).
 
-Extrait de app.py en UN seul module (step 7): les nombreuses fonctions partagent ces
-globaux par reference nue, donc elles vivent ensemble ici. app lit l'etat courant via
-cz_pipeline.NAME (BASE_REPO, ZIMAGE_TRANSFORMER, CHECKPOINTS_DIR, LORAS_DIR, LORAS,
-OMNI_MODEL, OFFLOAD_MODE, GUIDANCE, _PROGRESS, _STOP, _BASE_PIPE, ...) et pose
-cz_pipeline._PROGRESS / cz_pipeline._STOP depuis les handlers UI.
-Ne depend que de cz_core / cz_esrgan / cz_imageio (jamais de app ni de gradio).
+Fork de crispz-studio (Z-Image) : SEULE la couche modele (chargement diffusers,
+appel pipeline, guidance) est remplacee par FLUX.1 Krea. L'API publique du module est
+identique a l'upstream (memes noms de fonctions/variables, ex. set_zimage_model,
+ZIMAGE_TRANSFORMER, generate_omni, SAMPLER_CHOICES) pour ne casser ni cz_ui ni cz_cli ;
+ces noms designent desormais "le modele/transformer Flux courant". generate_omni
+(edition multi-reference) n'a pas d'equivalent Flux -> leve une erreur claire.
+
+app lit l'etat courant via cz_pipeline.NAME (BASE_REPO, ZIMAGE_TRANSFORMER,
+CHECKPOINTS_DIR, LORAS_DIR, LORAS, OMNI_MODEL, OFFLOAD_MODE, GUIDANCE, _PROGRESS,
+_STOP, _BASE_PIPE, ...) et pose cz_pipeline._PROGRESS / cz_pipeline._STOP depuis les
+handlers UI. Ne depend que de cz_core / cz_esrgan / cz_imageio (jamais de app ni gradio).
 """
 
 import os
@@ -21,10 +26,16 @@ import torch
 from PIL import Image
 
 from cz_core import (
-    CONFIG, HERE, DEVICE, DTYPE, DEFAULT_BASE_REPO,
+    CONFIG, HERE, DEVICE, DTYPE,
     DEFAULT_TILE, DEFAULT_OVERLAP, DEFAULT_REFINE_TILE, DEFAULT_REFINE_OVERLAP,
     _prefs, _is_single_file, _log, _dbg,
 )
+
+# Modele Flux par defaut. Krea [dev] = txt2img esthetique, guidance-distille.
+# Repo HF GATED -> login HF (HF_TOKEN / `hf auth login`) requis au 1er telechargement.
+# Surcharge possible via env ZIMAGE_MODEL (compat config) ou FLUX_MODEL, ou prefs.
+DEFAULT_BASE_REPO = (os.environ.get("FLUX_MODEL")
+                     or "black-forest-labs/FLUX.1-Krea-dev")
 from cz_esrgan import load_esrgan, esrgan_upscale
 from cz_imageio import _now_stamp
 
@@ -77,9 +88,18 @@ _LOADED_KEY = None
 OFFLOAD_MODE = "none"
 OFFLOAD_CHOICES = ("none", "model", "sequential")
 
-# CFG. Z-Image *Turbo* = distille -> guidance 0 (defaut). Z-Image *Base* (non Turbo) a
-# besoin d'une vraie guidance (~3.5-5) et de plus de steps (~20-28). Reglable par run.
-GUIDANCE = 0.0
+# Guidance Flux Krea [dev]. Krea est *guidance-distille* : `guidance_scale` n'est PAS
+# du CFG classique mais un embedding de guidance distille. Plage conseillee ~3.5-5
+# (defaut 4.5), avec ~28 steps. Reglable par run via l'UI (set_guidance).
+# Robustesse: un 0 herite d'une config Z-Image (guidance 0 = invalide pour un modele
+# distille) retombe sur 4.5. Override possible via env FLUX_GUIDANCE.
+GUIDANCE = float(os.environ.get("FLUX_GUIDANCE") or CONFIG.get("default_guidance") or 0) or 4.5
+
+# CFG "reel" (true classifier-free guidance) : Flux ne fait PAS de negative prompt par
+# defaut (guidance distillee). Pour qu'un negative prompt agisse, diffusers active un
+# vrai CFG via `true_cfg_scale > 1` (double le cout de la passe). On l'active uniquement
+# quand un negative prompt non vide est fourni. 1.0 = desactive. Reglable via config.
+TRUE_CFG = float(CONFIG.get("flux_true_cfg", 4.0))
 
 # Sampler / scheduler. Le pipeline Z-Image impose un schedule `sigmas` custom: seuls
 # les schedulers dont set_timesteps accepte `sigmas` fonctionnent. En pratique -> Euler
@@ -114,6 +134,31 @@ _STOP = False
 def set_guidance(g):
     global GUIDANCE
     GUIDANCE = float(g)
+
+
+def _cfg_kwargs(negative):
+    """kwargs CFG pour un appel txt2img Flux. Flux ignore le negative prompt sauf si on
+    active un vrai CFG (`true_cfg_scale > 1`). On ne l'active donc QUE si un negative non
+    vide est fourni (sinon cout double inutile)."""
+    neg = (negative or "").strip()
+    if neg and TRUE_CFG > 1.0:
+        return {"negative_prompt": neg, "true_cfg_scale": float(TRUE_CFG)}
+    return {}
+
+
+def _flux_call(pipe, **kw):
+    """Appelle un pipeline Flux en tolerant les variations d'API diffusers : si la version
+    installee ne connait pas `true_cfg_scale` / `negative_prompt` (anciennes builds), on
+    retire ces kwargs et on relance plutot que de crasher la generation."""
+    try:
+        return pipe(**kw)
+    except TypeError as e:
+        if any(k in kw for k in ("true_cfg_scale", "negative_prompt")):
+            for k in ("true_cfg_scale", "negative_prompt"):
+                kw.pop(k, None)
+            _dbg(f"flux call: retry sans kwargs CFG ({e})")
+            return pipe(**kw)
+        raise
 
 
 def _scheduler_accepts_sigmas(sched):
@@ -412,23 +457,11 @@ def set_omni_model(repo):
 
 
 def check_omni_available():
-    """Teste l'existence des repos Omni/Edit sur Hugging Face (API publique)."""
-    import urllib.request
-    found = []
-    for repo in ("Tongyi-MAI/Z-Image-Omni-Base", "Tongyi-MAI/Z-Image-Edit"):
-        try:
-            req = urllib.request.Request("https://huggingface.co/api/models/" + repo,
-                                         headers={"User-Agent": "crispz-studio"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                if r.status == 200:
-                    found.append(repo)
-        except Exception:
-            pass
-    if found:
-        return ("**Omni model available!** " + ", ".join(f"`{r}`" for r in found)
-                + " - set it in config.txt `zimage_omni_model` (or Models tab).")
-    return ("Not released yet. Z-Image-Omni-Base / Z-Image-Edit are still 'coming "
-            "soon'. The Omni tab will work once they ship.")
+    """crispz-krea = FLUX.1 Krea, un modele txt2img: pas de mode Omni/Edit
+    multi-reference. Pour l'edition d'image par instruction, voir crispz-qwen-edit."""
+    return ("Not applicable: crispz-krea runs **FLUX.1 Krea [dev]**, a text-to-image "
+            "model with no multi-reference Omni/Edit mode. For instruction-based image "
+            "editing, use the **crispz-qwen-edit** variant (Qwen-Image-Edit).")
 
 
 def set_offload_mode(mode):
@@ -515,12 +548,12 @@ def _vram_str():
 
 
 # ----------------------------------------------------------------------------
-# Z-Image (diffusers, BF16) : un pipeline "base" txt2img qui detient les composants,
+# FLUX.1 Krea (diffusers, BF16) : un pipeline "base" txt2img qui detient les composants,
 # img2img / inpaint derives via from_pipe (poids partages, pas de VRAM en double).
 # ----------------------------------------------------------------------------
 def _ensure_base():
     """Charge (si besoin) le pipeline de base txt2img. Gere le transformer
-    single-file (Civitai) et l'offload. Cache par (repo, transformer, offload)."""
+    single-file (Civitai/Flux) et l'offload. Cache par (repo, transformer, offload)."""
     global _BASE_PIPE, _DERIVED, _LOADED_KEY, _BASE_SCHED_CONFIG
     key = (BASE_REPO, ZIMAGE_TRANSFORMER, OFFLOAD_MODE, tuple(LORAS))
     _dbg(f"_ensure_base key={key} cached={_LOADED_KEY}")
@@ -530,31 +563,31 @@ def _ensure_base():
     if _BASE_PIPE is not None:
         _dbg("base pipeline: key changed -> free + reload")
         free_vram()
-    from diffusers import ZImagePipeline, ZImageTransformer2DModel
+    from diffusers import FluxPipeline, FluxTransformer2DModel
     t0 = time.time()
     kwargs = {}
     if ZIMAGE_TRANSFORMER:
         if _is_single_file(ZIMAGE_TRANSFORMER):
-            _log(f"loading Z-Image transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
-            kwargs["transformer"] = ZImageTransformer2DModel.from_single_file(
+            # checkpoint Flux single-file (.safetensors) -> override du transformer
+            # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
+            _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
+            kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
                 ZIMAGE_TRANSFORMER, torch_dtype=DTYPE)
         else:
-            # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'
-            # (utile pour les modeles comme Juggernaut-Z dont le tokenizer est
-            # incomplet: on garde VAE + encodeur + tokenizer du repo de base).
-            _log(f"loading Z-Image transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
-            kwargs["transformer"] = ZImageTransformer2DModel.from_pretrained(
+            # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'.
+            _log(f"loading Flux transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
+            kwargs["transformer"] = FluxTransformer2DModel.from_pretrained(
                 ZIMAGE_TRANSFORMER, subfolder="transformer", torch_dtype=DTYPE)
-    _log(f"loading Z-Image base: {BASE_REPO} (offload={OFFLOAD_MODE}, dtype=bf16) ... "
-         "first time downloads from HF, then cached")
-    pipe = ZImagePipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs)
+    _log(f"loading FLUX.1 Krea base: {BASE_REPO} (offload={OFFLOAD_MODE}, dtype=bf16) ... "
+         "repo GATED: needs HF login (HF_TOKEN) on first download, then cached")
+    pipe = FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs)
     # Capture le config natif (flow-matching) du scheduler -> base pour construire les
     # autres samplers (euler/dpm2a/dpmpp2m) sans perdre shift/flow params.
     try:
         _BASE_SCHED_CONFIG = dict(pipe.scheduler.config)
     except Exception:
         _BASE_SCHED_CONFIG = None
-    # LoRA Z-Image (sur le transformer du base -> partage par les pipes derives).
+    # LoRA Flux (sur le transformer du base -> partage par les pipes derives).
     if LORAS:
         try:
             names, weights = [], []
@@ -580,9 +613,9 @@ def _ensure_base():
     else:
         pipe = pipe.to(DEVICE)
     # VAE tiling/slicing: indispensable pour l'img2img/upscale. L'encode/decode VAE d'une
-    # tuile 1024 + le modele complet en VRAM (transformer + encodeur Qwen3-4B ~8 Go) fait
-    # deborder les 32 Go -> spill RAM partagee -> ~300s/step. Tuiler le VAE plafonne ce pic
-    # (comme le "tiled decode" de ComfyUI). Le VAE est partage par les pipes derives.
+    # tuile 1024 + le modele complet en VRAM (transformer Flux ~12B + encodeurs CLIP/T5)
+    # peut faire deborder la VRAM -> spill RAM partagee -> tres lent. Tuiler le VAE plafonne
+    # ce pic (comme le "tiled decode" de ComfyUI). Le VAE est partage par les pipes derives.
     try:
         pipe.vae.config.force_upcast = False   # VAE en bf16 (fp32 lent sur Blackwell) -- TOUJOURS
     except Exception:
@@ -596,7 +629,7 @@ def _ensure_base():
     _BASE_PIPE = pipe
     _DERIVED = {"txt2img": pipe}
     _LOADED_KEY = key
-    _log(f"Z-Image base ready in {time.time() - t0:.1f}s (sampler={SAMPLER}/{SCHEDULE})")
+    _log(f"FLUX.1 Krea base ready in {time.time() - t0:.1f}s (sampler={SAMPLER}/{SCHEDULE})")
     return pipe
 
 
@@ -610,16 +643,15 @@ def get_pipe(kind="img2img"):
         return _DERIVED[kind]
     if kind == "omni":
         return _load_omni()
-    from diffusers import ZImageImg2ImgPipeline, ZImageInpaintPipeline
-    cls = {"img2img": ZImageImg2ImgPipeline, "inpaint": ZImageInpaintPipeline}.get(kind)
+    from diffusers import FluxImg2ImgPipeline, FluxInpaintPipeline
+    cls = {"img2img": FluxImg2ImgPipeline, "inpaint": FluxInpaintPipeline}.get(kind)
     if cls is None:
         return base
     _log(f"deriving {kind} pipeline (shared weights, no extra VRAM)")
-    # BUG diffusers: ZImage*Pipeline.from_pipe() UPCASTE tout le pipe (transformer + VAE)
-    # en float32. Sur Blackwell (5090: pas de tensor cores fp32) l'img2img/inpaint devient
-    # 100-300x plus lent que txt2img (transformer 0.5s -> 108s, mesure). On force bf16 a la
-    # derivation, on recaste (composants partages avec le base), on coupe le re-upcast fp32
-    # du VAE, et on vide le cache (les copies fp32 transitoires reservaient ~49 Go -> spill).
+    # Defensif (herite de l'upstream Z-Image): certains from_pipe() de diffusers upcastent
+    # le pipe en float32, ce qui ecroule la vitesse sur les GPU sans tensor cores fp32
+    # (Blackwell). On force donc bf16 a la derivation, on recaste les composants partages,
+    # on coupe le re-upcast fp32 du VAE, et on vide le cache des copies fp32 transitoires.
     try:
         p = cls.from_pipe(base, torch_dtype=DTYPE)
     except TypeError:
@@ -647,64 +679,21 @@ def get_pipe(kind="img2img"):
     return p
 
 
+_OMNI_UNSUPPORTED = (
+    "crispz-krea runs FLUX.1 Krea [dev], a text-to-image model with no multi-reference "
+    "Omni/Edit pipeline. Use the crispz-qwen-edit variant (Qwen-Image-Edit) for "
+    "instruction-based image editing.")
+
+
 def _load_omni():
-    """Charge le pipeline Omni (multi-reference). Necessite un modele Z-Image
-    Omni/Edit (avec encodeur SigLIP) -> CONFIG['zimage_omni_model'] ou env
-    ZIMAGE_OMNI_MODEL. Pipeline separe (ne partage pas avec le base)."""
-    global _DERIVED
-    from diffusers import ZImageOmniPipeline
-    repo = (OMNI_MODEL or os.environ.get("ZIMAGE_OMNI_MODEL")
-            or CONFIG.get("zimage_omni_model") or "").strip()
-    if not repo:
-        raise RuntimeError(
-            "Omni needs a dedicated Z-Image Omni/Edit model (with a SigLIP encoder that "
-            "the Turbo/Base text-to-image models do not ship). As of now Tongyi has only "
-            "released Z-Image-Turbo and Z-Image-Base; 'Z-Image-Omni-Base' and 'Z-Image-Edit' "
-            "are still 'coming soon'. Once published, set 'zimage_omni_model' in config.txt "
-            "to its HF repo id (likely 'Tongyi-MAI/Z-Image-Omni-Base' or 'Tongyi-MAI/"
-            "Z-Image-Edit') or a local diffusers folder.")
-    _log(f"loading Z-Image Omni: {repo} (offload={OFFLOAD_MODE}) ...")
-    t0 = time.time()
-    pipe = ZImageOmniPipeline.from_pretrained(repo, torch_dtype=DTYPE)
-    # Attention slicing pose par appel via _set_slicing (cf. _ensure_base).
-    if DEVICE == "cuda" and OFFLOAD_MODE == "model":
-        pipe.enable_model_cpu_offload()
-    elif DEVICE == "cuda" and OFFLOAD_MODE == "sequential":
-        pipe.enable_sequential_cpu_offload()
-    else:
-        pipe = pipe.to(DEVICE)
-    _DERIVED["omni"] = pipe
-    _log(f"Z-Image Omni ready in {time.time() - t0:.1f}s")
-    return pipe
+    """Pas d'equivalent Omni/Edit pour Flux Krea (txt2img). Conserve pour compat d'API."""
+    raise RuntimeError(_OMNI_UNSUPPORTED)
 
 
 def generate_omni(refs, prompt, negative, width, height, steps, seed):
-    """Omni multi-reference: compose une image a partir de plusieurs images de
-    reference + un prompt (ex. personne + vetement). ZImageOmniPipeline natif."""
-    refs = [r for r in (refs or []) if r is not None]
-    if not refs:
-        raise ValueError("Omni needs at least one reference image.")
-    pipe = get_pipe("omni")
-    w = round_to_multiple(int(width))
-    h = round_to_multiple(int(height))
-    _log(f"omni: {len(refs)} ref(s) -> {w}x{h}, {int(steps)} steps, guidance {GUIDANCE:.1f} ...")
-    _progress(0.1, f"Omni compose ({len(refs)} refs)...")
-    _set_slicing(pipe, max(w, h))
-    t0 = time.time()
-    out = pipe(
-        image=[r.convert("RGB") for r in refs],
-        prompt=prompt or "",
-        negative_prompt=(negative or None),
-        width=w, height=h,
-        num_inference_steps=int(steps),
-        guidance_scale=GUIDANCE,
-        generator=_make_generator(seed),
-    ).images[0]
-    _log(f"omni done in {time.time() - t0:.1f}s")
-    gc.collect()
-    if DEVICE == "cuda":
-        torch.cuda.empty_cache()
-    return out
+    """Non supporte sur crispz-krea (Flux Krea = txt2img). Conserve pour que l'API du
+    module reste identique a l'upstream (cz_ui importe generate_omni)."""
+    raise RuntimeError(_OMNI_UNSUPPORTED)
 
 
 def load_pipe():
@@ -713,8 +702,9 @@ def load_pipe():
 
 
 def generate(prompt, width, height, steps, seed, negative_prompt=""):
-    """txt2img Z-Image: genere une image depuis un prompt.
-    Turbo -> GUIDANCE 0. Base -> GUIDANCE ~3.5-5 + plus de steps."""
+    """txt2img FLUX.1 Krea: genere une image depuis un prompt. Krea [dev] est
+    guidance-distille -> GUIDANCE ~4.5 et ~28 steps conseilles. Un negative prompt
+    n'agit que si TRUE_CFG > 1 (vrai CFG, cout double; cf. _cfg_kwargs)."""
     pipe = get_pipe("txt2img")
     w = round_to_multiple(int(width))
     h = round_to_multiple(int(height))
@@ -726,13 +716,14 @@ def generate(prompt, width, height, steps, seed, negative_prompt=""):
     _progress(0.1, f"Generating {w}x{h} ({int(steps)} steps)...")
     _set_slicing(pipe, max(w, h))
     t0 = time.time()
-    img = pipe(
+    img = _flux_call(
+        pipe,
         prompt=prompt or "",
-        negative_prompt=(negative_prompt or None),
         width=w, height=h,
         num_inference_steps=int(steps),
         guidance_scale=GUIDANCE,
         generator=_make_generator(seed),
+        **_cfg_kwargs(negative_prompt),
     ).images[0]
     _log(f"txt2img done in {time.time() - t0:.1f}s")
     if DEVICE == "cuda":
@@ -1107,9 +1098,9 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
             out = _refine_tiled(pipe, img, denoise, steps, prompt, seed,
                                 rt, int(refine_overlap) or 64)
         else:
-            _log(f"Z-Image refine: whole image {rw}x{rh}, denoise {float(denoise):.2f}, "
+            _log(f"Flux refine: whole image {rw}x{rh}, denoise {float(denoise):.2f}, "
                  f"{int(steps)} steps ...")
-            _progress(0.5, f"Z-Image refine {rw}x{rh}...")
+            _progress(0.5, f"Flux refine {rw}x{rh}...")
             out = _refine_whole(pipe, img, denoise, steps, prompt, seed)
         timings["refine"] += time.time() - t0
         return out
@@ -1164,7 +1155,7 @@ def txt2img_run(prompt, width, height, gen_steps, seed, negative_prompt="",
 def _gen_meta(mode, prompt, negative="", seed=None, steps=None, guidance=None,
               size=None, model=None, styles=None, extra=None):
     """Construit le dict de metadonnees de generation (pour sidecar/PNG)."""
-    m = {"app": "crispz-studio", "mode": mode, "prompt": prompt or "",
+    m = {"app": "crispz-krea", "mode": mode, "prompt": prompt or "",
          "negative": negative or "", "date": _now_stamp()}
     if seed is not None and int(seed) >= 0:
         m["seed"] = int(seed)
