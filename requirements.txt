@@ -16,6 +16,11 @@ spandrel
 # Without it: "PEFT backend is required for this method" -> LoRA silently skipped.
 peft
 
+# GGUF quantized single-file transformers (GGUFQuantizationConfig). Lets a quantized
+# FLUX .gguf transformer fit in consumer VRAM. Note: FLUX still needs its CLIP/T5 text
+# encoders + VAE from the (gated) base repo. ComfyUI FP8 .safetensors are not loadable.
+gguf
+
 # Comparateur avant/apres = composant HTML+JS interne (voir _make_compare_html dans app.py).
 # Pas de dep externe -> stack stable.
 # Borne <6: Gradio 6 a un middleware Brotli buggé avec h11 ("Too little data for
