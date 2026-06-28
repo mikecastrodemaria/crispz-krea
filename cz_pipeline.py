@@ -335,10 +335,11 @@ def list_checkpoints():
         for f in os.listdir(d):
             if f in seen:
                 continue
-            if not f.lower().endswith((".safetensors", ".ckpt", ".pt", ".sft")):
+            if not f.lower().endswith((".safetensors", ".ckpt", ".pt", ".sft", ".gguf")):
                 continue
             if f.lower().endswith(".safetensors") and _safetensors_is_fp8(os.path.join(d, f)):
-                _log(f"checkpoint skipped (FP8, not supported by diffusers): {f}")
+                _log(f"checkpoint skipped (FP8 .safetensors, not loadable by diffusers; "
+                     f"use a .gguf quantized version instead): {f}")
                 continue
             seen.add(f)
             out.append(f)
@@ -568,11 +569,21 @@ def _ensure_base():
     kwargs = {}
     if ZIMAGE_TRANSFORMER:
         if _is_single_file(ZIMAGE_TRANSFORMER):
-            # checkpoint Flux single-file (.safetensors) -> override du transformer
-            # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
-            _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
-            kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
-                ZIMAGE_TRANSFORMER, torch_dtype=DTYPE)
+            if ZIMAGE_TRANSFORMER.lower().endswith(".gguf"):
+                # transformer Flux GGUF (quantifie) -> tient en VRAM, rapide. Le VAE +
+                # encodeurs CLIP/T5 viennent quand meme du repo de base (gated pour Krea).
+                from diffusers import GGUFQuantizationConfig
+                _log(f"loading Flux transformer (GGUF, quantized): {ZIMAGE_TRANSFORMER} ...")
+                kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
+                    ZIMAGE_TRANSFORMER,
+                    quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
+                    torch_dtype=DTYPE)
+            else:
+                # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
+                # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
+                _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
+                kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
+                    ZIMAGE_TRANSFORMER, torch_dtype=DTYPE)
         else:
             # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'.
             _log(f"loading Flux transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
