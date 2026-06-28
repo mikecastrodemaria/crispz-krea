@@ -574,9 +574,12 @@ def _ensure_base():
                 # encodeurs CLIP/T5 viennent quand meme du repo de base (gated pour Krea).
                 from diffusers import GGUFQuantizationConfig
                 _log(f"loading Flux transformer (GGUF, quantized): {ZIMAGE_TRANSFORMER} ...")
+                # config/subfolder = archi du transformer depuis le repo de base (cache),
+                # sinon from_single_file ne sait pas la structure et tente un repo par defaut.
                 kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
                     ZIMAGE_TRANSFORMER,
                     quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
+                    config=BASE_REPO, subfolder="transformer",
                     torch_dtype=DTYPE)
             else:
                 # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
