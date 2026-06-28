@@ -70,17 +70,7 @@ def _load_config():
 
 CONFIG = _load_config()
 
-
-# Token Hugging Face pour les repos GATED (ex. FLUX.1-Krea-dev). Priorite: env HF_TOKEN
-# deja pose -> config.txt 'hf_token'. On pose HF_TOKEN + HUGGING_FACE_HUB_TOKEN pour que
-# diffusers / huggingface_hub authentifient les telechargements SANS 'huggingface-cli login'.
-# config.txt est gitignore -> le token n'est jamais commit (ne PAS le mettre dans config-sample).
-_hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-             or CONFIG.get("hf_token") or "").strip()
-if _hf_token:
-    os.environ["HF_TOKEN"] = _hf_token
-    os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
-
+# (Token Hugging Face: applique plus bas, apres le chargement de preferences.json.)
 
 # Defauts pilotes par config.txt (repli sur les constantes ci-dessus).
 DEFAULT_FACTOR = float(CONFIG.get("default_factor", DEFAULT_FACTOR))
@@ -159,6 +149,38 @@ def _is_single_file(p):
 
 
 _prefs = _load_prefs_raw()
+
+
+# Token Hugging Face pour les repos GATED (ex. FLUX.1-Krea-dev). Resolution (1er non vide):
+# env HF_TOKEN / HUGGING_FACE_HUB_TOKEN -> config.txt 'hf_token' -> preferences.json 'hf_token'.
+# On pose les env vars pour que diffusers/huggingface_hub authentifient SANS 'huggingface-cli
+# login'. config.txt ET preferences.json sont gitignores -> le token n'est jamais commit.
+def _apply_hf_token(token):
+    token = (token or "").strip()
+    if token:
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    return token
+
+
+def set_hf_token(token):
+    """Pose le token HF pour la session ET le persiste dans preferences.json (gitignore).
+    Appele par l'UI (onglet Models). Renvoie le token applique (vide si efface)."""
+    token = _apply_hf_token(token)
+    try:
+        _save_prefs_keys({"hf_token": token})
+    except Exception:
+        pass
+    return token
+
+
+def hf_token_is_set():
+    """Vrai si un token HF est actif dans l'environnement courant."""
+    return bool((os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip())
+
+
+_apply_hf_token(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                or CONFIG.get("hf_token") or _prefs.get("hf_token") or "")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16

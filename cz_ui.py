@@ -57,6 +57,7 @@ from cz_core import (  # noqa: E402,F401
     DEVICE, DTYPE, VERBOSE,
     _load_config, _load_prefs_raw, _save_prefs_keys, _prefs, _is_single_file,
     _parse_log_level, _LOG_NAMES, set_log_level, _log, _dbg, _pil_to_b64_jpeg,
+    set_hf_token, hf_token_is_set,
 )
 
 # Presets "cas d'usage" -> reglages auto. Seules les cles presentes sont appliquees,
@@ -706,6 +707,18 @@ def _ui_kw_to_prompt(prompt_text, keywords):
 
 def _ui_check_omni():
     return check_omni_available()
+
+
+def _save_hf_token(token):
+    """Onglet Models: pose + persiste le token HF (preferences.json, gitignore). Vide le
+    champ apres coup (le token n'est jamais re-affiche)."""
+    token = (token or "").strip()
+    if not token:
+        return gr.update(), ("No change. Enter a token (it won't be shown), or it stays as-is."
+                             if hf_token_is_set() else "Enter a Hugging Face token to save.")
+    set_hf_token(token)
+    return gr.update(value=""), ("✅ HF token saved (preferences.json, gitignored) and applied. "
+                                 "Gated downloads (e.g. FLUX.1-Krea-dev) will now authenticate.")
 
 
 def _save_paths_to_prefs(esrgan_dir, checkpoints_dir=None, checkpoints_extra_dir=None,
@@ -1616,6 +1629,19 @@ def build_ui():
                         log_level_status = gr.Markdown("")
 
                     with gr.Tab("Models"):
+                        gr.Markdown("### Hugging Face access (gated models)")
+                        with gr.Row():
+                            hf_token_tb = gr.Textbox(
+                                value="", type="password", scale=3, label="HF token",
+                                placeholder="hf_... (for gated models, e.g. FLUX.1-Krea-dev)",
+                                info="Saved to preferences.json (gitignored) and applied immediately. "
+                                     "Leave empty to keep the current token.")
+                            hf_token_save_btn = gr.Button("Save token", size="sm", scale=1, variant="primary")
+                        hf_token_status = gr.Markdown(
+                            "✅ A Hugging Face token is currently set."
+                            if hf_token_is_set() else
+                            "No HF token set (only needed for gated models).")
+
                         offload = gr.Dropdown(choices=list(cz_pipeline.OFFLOAD_CHOICES), value="none",
                                               label="CPU offload (VRAM)",
                                               info="How much of the model to move to CPU RAM to save VRAM. Details below.")
@@ -1751,6 +1777,7 @@ def build_ui():
         style_search.change(_filter_styles, [style_search, styles], [styles])
 
         # Actions
+        hf_token_save_btn.click(_save_hf_token, [hf_token_tb], [hf_token_tb, hf_token_status])
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         save_paths_btn.click(_save_paths_to_prefs,
                              [esrgan_dir_tb, ckpt_dir_tb, ckpt_extra_dir_tb, lora_dir_tb, wild_dir_tb],
