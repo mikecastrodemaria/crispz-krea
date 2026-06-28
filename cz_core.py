@@ -44,7 +44,7 @@ DEFAULT_OUTPUT_DIR = "out"
 DEFAULT_OUTPUT_FORMAT = "png"        # png | webp | jpg
 SUPPORTED_FORMATS = ("png", "webp", "jpg")
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".heic")
-DEFAULT_BASE_REPO = "Tongyi-MAI/Z-Image-Turbo"
+DEFAULT_BASE_REPO = "black-forest-labs/FLUX.1-Krea-dev"
 DEFAULT_ESRGAN_DIR = os.path.join(HERE, "upscale_models")
 
 
@@ -76,12 +76,13 @@ DEFAULT_OUTPUT_DIR = CONFIG.get("default_output_dir", DEFAULT_OUTPUT_DIR)
 DEFAULT_OUTPUT_FORMAT = CONFIG.get("default_output_format", DEFAULT_OUTPUT_FORMAT)
 
 # Profils par modele: substring du nom -> reglages recommandes (steps/guidance).
+# Flux Krea [dev] est guidance-distille (3.5-5, ~28 steps); schnell = 4 steps, guidance 0.
 MODEL_PROFILES = CONFIG.get("model_profiles") or {
-    "turbo": {"steps": 8, "guidance": 0.0},
-    "juggernaut": {"steps": 28, "guidance": 6.0},
-    "base": {"steps": 24, "guidance": 4.0},
+    "krea": {"steps": 28, "guidance": 4.5},
+    "flux": {"steps": 28, "guidance": 3.5},
+    "schnell": {"steps": 4, "guidance": 0.0},
 }
-DEFAULT_MODEL_PROFILE = CONFIG.get("default_model_profile") or {"steps": 8, "guidance": 0.0}
+DEFAULT_MODEL_PROFILE = CONFIG.get("default_model_profile") or {"steps": 28, "guidance": 4.5}
 
 
 def profile_for_model(name):
