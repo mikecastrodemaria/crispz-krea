@@ -314,9 +314,9 @@ Juggernaut-Z is a **Z-Image Base** fine-tune → set **Performance = "Base CFG"*
 **Persist the folders** (so you don't re-type them) in `config.txt`:
 
 ```json
-"checkpoints_dir": "D:\\Github\\sdlibs\\models\\Stable-diffusion\\Z-Image",
+"checkpoints_dir": "C:\\path\\to\\models\\Stable-diffusion\\Z-Image",
 "checkpoints_extra_dir": "",
-"loras_dir": "D:\\Github\\sdlibs\\models\\Lora"
+"loras_dir": "C:\\path\\to\\models\\Lora"
 ```
 
 ### LoRA (up to 3, combinable)
@@ -599,7 +599,7 @@ Full `preferences.json` example:
 
 ```json
 {
-  "esrgan_dir": "D:/Github/sdlibs/models/ESRGAN",
+  "esrgan_dir": "C:/path/to/models/ESRGAN",
   "zimage_model": "Tongyi-MAI/Z-Image-Turbo",
   "model": "4x-ClearRealityV1_Soft.safetensors",
   "factor": 2.0,

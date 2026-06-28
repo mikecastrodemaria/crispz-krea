@@ -15,6 +15,12 @@ Lancer:  python app.py            (UI)
          python app.py --help     (CLI)
 """
 
+# Force l'implementation python de protobuf AVANT tout import (transformers/sentencepiece).
+# Evite "TypeError: Descriptors cannot be created directly" au chargement du tokenizer T5
+# (FLUX) avec protobuf 4.x+. Impact perf nul (protobuf sert juste au chargement tokenizer).
+import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import sys
 
 # Modules conservant l'etat mutable runtime (lus en live par __getattr__).
