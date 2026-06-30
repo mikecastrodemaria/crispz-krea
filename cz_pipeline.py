@@ -662,16 +662,19 @@ def get_pipe(kind="img2img"):
     if cls is None:
         return base
     _log(f"deriving {kind} pipeline (shared weights, no extra VRAM)")
-    # Defensif (herite de l'upstream Z-Image): certains from_pipe() de diffusers upcastent
-    # le pipe en float32, ce qui ecroule la vitesse sur les GPU sans tensor cores fp32
-    # (Blackwell). On force donc bf16 a la derivation, on recaste les composants partages,
-    # on coupe le re-upcast fp32 du VAE, et on vide le cache des copies fp32 transitoires.
+    # Un transformer GGUF est QUANTIFIE: on ne peut pas le recaster en dtype (.to(DTYPE)
+    # leve "Casting a quantized model to a new dtype is unsupported"). On saute donc le
+    # recast bf16 dans ce cas (le compute_dtype est deja bf16). Sinon (bf16 plein): recast
+    # defensif Blackwell (certains from_pipe upcastent en float32 -> tres lent sans tensor
+    # cores fp32). On coupe aussi le re-upcast fp32 du VAE et on vide le cache transitoire.
+    quantized = bool(ZIMAGE_TRANSFORMER) and ZIMAGE_TRANSFORMER.lower().endswith(".gguf")
     try:
-        p = cls.from_pipe(base, torch_dtype=DTYPE)
+        p = cls.from_pipe(base) if quantized else cls.from_pipe(base, torch_dtype=DTYPE)
     except TypeError:
         p = cls.from_pipe(base)
     try:
-        p = p.to(DTYPE)
+        if not quantized:
+            p = p.to(DTYPE)
         p.vae.config.force_upcast = False
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
