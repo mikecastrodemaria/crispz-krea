@@ -669,7 +669,11 @@ def get_pipe(kind="img2img"):
     # cores fp32). On coupe aussi le re-upcast fp32 du VAE et on vide le cache transitoire.
     quantized = bool(ZIMAGE_TRANSFORMER) and ZIMAGE_TRANSFORMER.lower().endswith(".gguf")
     try:
-        p = cls.from_pipe(base) if quantized else cls.from_pipe(base, torch_dtype=DTYPE)
+        # quantized: torch_dtype=None evite le cast interne de from_pipe. ATTENTION: sans
+        # argument, from_pipe defaut a float32 (kwargs.pop("torch_dtype", torch.float32)) et
+        # appelle .to(dtype=float32) -> "Casting a quantized model is unsupported". Passer
+        # explicitement None court-circuite ce cast. Plein bf16: cast defensif Blackwell.
+        p = cls.from_pipe(base, torch_dtype=None) if quantized else cls.from_pipe(base, torch_dtype=DTYPE)
     except TypeError:
         p = cls.from_pipe(base)
     try:
