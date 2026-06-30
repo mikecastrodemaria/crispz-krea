@@ -17,7 +17,12 @@ set PYTHONIOENCODING=utf-8
 REM === GATED: FLUX.1-Krea-dev exige une auth HF. Une fois pour toutes, accepte la licence
 REM sur https://huggingface.co/black-forest-labs/FLUX.1-Krea-dev puis: huggingface-cli login
 REM --token hf_xxx  (sinon: 401 GatedRepoError au 1er chargement). ===
-REM === VRAM: FLUX (~12B transformer + T5/CLIP) ~33 Go > 32 Go -> offload 'model' requis. ===
+REM === VRAM: FLUX bf16 (~12B transformer + T5/CLIP) ~33 Go > 32 Go -> offload 'model'.
+REM Avec un transformer GGUF (~7 Go) ca tient encore plus large; 'model' reste sur (anti-OOM). ===
 set CZ_OFFLOAD=model
+REM === LOCAL-ONLY: le transformer GGUF est local et les encodeurs T5/CLIP + VAE de
+REM FLUX.1-Krea-dev sont DEJA EN CACHE (~32 Go) -> aucun reseau. Met en commentaire (REM)
+REM cette ligne uniquement si tu dois (re)telecharger un modele non cache. ===
+set HF_HUB_OFFLINE=1
 REM Delegue au run.bat (detection venv + ESRGAN_DIR + lancement)
 call "%~dp0run.bat" %*
