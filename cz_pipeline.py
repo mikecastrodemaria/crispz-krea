@@ -632,9 +632,19 @@ def _ensure_base():
     # PAS au chargement. En tuile/1024 -> slicing OFF = attention SDPA native, rapide
     # (comme ComfyUI). Whole-image 2K+ -> slicing ON pour eviter le spill VRAM 32 Go.
     # enable_*_cpu_offload gere lui-meme le device -> ne PAS faire .to(cuda) alors.
-    if DEVICE == "cuda" and OFFLOAD_MODE == "model":
+    # IMPORTANT: un transformer GGUF quantifie ne se deplace PAS sur le GPU via .to(cuda)
+    # (offload=none) ni en sequential -> il reste sur CPU = ULTRA lent (VRAM vide, ~500s/step).
+    # Seul enable_model_cpu_offload (accelerate) le pose sur le GPU pendant le forward. On
+    # force donc 'model' pour un base GGUF, quel que soit le reglage UI/config.
+    _off = OFFLOAD_MODE
+    _is_gguf = bool(ZIMAGE_TRANSFORMER) and ZIMAGE_TRANSFORMER.lower().endswith(".gguf")
+    if DEVICE == "cuda" and _is_gguf and _off != "model":
+        _log(f"GGUF base: offload '{_off}' force a 'model' (un GGUF ne tourne pas sur GPU "
+             f"en none/sequential -> sinon CPU, ~500s/step)")
+        _off = "model"
+    if DEVICE == "cuda" and _off == "model":
         pipe.enable_model_cpu_offload()
-    elif DEVICE == "cuda" and OFFLOAD_MODE == "sequential":
+    elif DEVICE == "cuda" and _off == "sequential":
         pipe.enable_sequential_cpu_offload()
     else:
         pipe = pipe.to(DEVICE)
