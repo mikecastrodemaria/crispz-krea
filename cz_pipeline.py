@@ -1007,12 +1007,19 @@ def _make_generator(seed):
 
 
 def _refine_whole(pipe, image, denoise, steps, prompt, seed):
-    """Passe Z-Image img2img sur l'image entiere (ou une tuile). Le slicing est pose
-    selon la taille reelle traitee: tuile 1024 -> OFF (rapide), whole 2K+ -> ON."""
+    """Passe Flux img2img sur l'image entiere (ou une tuile). Le slicing est pose
+    selon la taille reelle traitee: tuile 1024 -> OFF (rapide), whole 2K+ -> ON.
+    IMPORTANT: on passe width/height = taille de l'image (alignee sur 16). Sinon Flux
+    img2img retombe sur son defaut (height = default_sample_size * vae_scale_factor = 1024)
+    et REDIMENSIONNE l'entree en 1024x1024 -> le ratio est ecrase (bug). En forcant les
+    dimensions de l'entree, le ratio d'origine est preserve en upscale/img2img."""
     _set_slicing(pipe, max(image.size))
+    w = round_to_multiple(image.width, 16)
+    h = round_to_multiple(image.height, 16)
     return pipe(
         prompt=prompt or "",
         image=image,
+        width=w, height=h,
         strength=float(denoise),
         num_inference_steps=int(steps),
         guidance_scale=GUIDANCE,
