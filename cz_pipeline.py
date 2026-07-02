@@ -986,11 +986,17 @@ def _make_generator(seed):
 
 def _refine_whole(pipe, image, denoise, steps, prompt, seed):
     """Passe Z-Image img2img sur l'image entiere (ou une tuile). Le slicing est pose
-    selon la taille reelle traitee: tuile 1024 -> OFF (rapide), whole 2K+ -> ON."""
+    selon la taille reelle traitee: tuile 1024 -> OFF (rapide), whole 2K+ -> ON.
+    On passe width/height = taille de l'entree (alignee /16) pour garantir la preservation
+    du ratio (par coherence avec les forks Flux/Qwen; ZImageImg2ImgPipeline derive deja la
+    taille de l'image d'entree, donc c'est sans effet ici mais protege des regressions)."""
     _set_slicing(pipe, max(image.size))
+    w = round_to_multiple(image.width, 16)
+    h = round_to_multiple(image.height, 16)
     return pipe(
         prompt=prompt or "",
         image=image,
+        width=w, height=h,
         strength=float(denoise),
         num_inference_steps=int(steps),
         guidance_scale=GUIDANCE,
