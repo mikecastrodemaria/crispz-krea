@@ -81,6 +81,12 @@ OFFLOAD_CHOICES = ("none", "model", "sequential")
 # besoin d'une vraie guidance (~3.5-5) et de plus de steps (~20-28). Reglable par run.
 GUIDANCE = 0.0
 
+# Force ratio (facon Fooocus) pour upscale/img2img: si defini, l'image d'ENTREE est
+# recadree au centre a ce ratio avant traitement (crop to fit). Vide = ratio natif preserve
+# (defaut). Format: 'W:H' ou 'WxH' (ex. '13:19', '832x1216'). Pilotable par l'UI (case a
+# cocher + dropdown Aspect ratio) via set_force_ratio, ou par config.txt 'force_upscale_ratio'.
+FORCE_RATIO = (os.environ.get("CZ_FORCE_RATIO") or CONFIG.get("force_upscale_ratio") or "").strip()
+
 # Sampler / scheduler. Le pipeline Z-Image impose un schedule `sigmas` custom: seuls
 # les schedulers dont set_timesteps accepte `sigmas` fonctionnent. En pratique -> Euler
 # flow-matching (natif, defaut) et UniPC (multistep). Les DPM++ 2M / DPM2a de diffusers
@@ -760,6 +766,43 @@ def round_to_multiple(x, m=16):
     return max(m, int(round(x / m) * m))
 
 
+def set_force_ratio(spec):
+    """Definit le ratio force pour upscale/img2img: 'W:H' / 'WxH' (ex '13:19', '832x1216')
+    ou '' pour desactiver (ratio natif preserve). Pilote par la case a cocher UI."""
+    global FORCE_RATIO
+    FORCE_RATIO = (spec or "").strip()
+    _log(f"force ratio -> {FORCE_RATIO or '(off, ratio natif preserve)'}")
+
+
+def _parse_ratio(spec):
+    """(w, h) depuis 'W:H', 'WxH', ou un label '832 x 1216 | 13:19'; sinon None."""
+    import re
+    if not spec:
+        return None
+    m = re.search(r"(\d+)\s*[:xX×]\s*(\d+)", str(spec))
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return (a, b) if a > 0 and b > 0 else None
+
+
+def _crop_to_ratio(image, ratio_w, ratio_h):
+    """Recadre (centre) l'image au ratio ratio_w:ratio_h en gardant l'aire maximale."""
+    image = image.convert("RGB")
+    w, h = image.size
+    target = float(ratio_w) / float(ratio_h)
+    cur = w / h
+    if abs(cur - target) < 1e-3:
+        return image
+    if cur > target:                       # trop large -> couper les cotes
+        nw = max(1, int(round(h * target)))
+        x0 = (w - nw) // 2
+        return image.crop((x0, 0, x0 + nw, h))
+    nh = max(1, int(round(w / target)))    # trop haut -> couper haut/bas
+    y0 = (h - nh) // 2
+    return image.crop((0, y0, w, y0 + nh))
+
+
 def _reframe_canvas(image, ratio_w, ratio_h, overlap=8):
     """Place l'image dans un canevas plus grand au ratio cible (expansion sur 1 axe),
     + un masque (blanc = a remplir, noir = a garder, avec un petit overlap)."""
@@ -1082,13 +1125,22 @@ def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
 # ----------------------------------------------------------------------------
 def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile, overlap,
                 refine_tile=DEFAULT_REFINE_TILE, refine_overlap=DEFAULT_REFINE_OVERLAP,
-                do_esrgan=True, refine_first=False):
+                do_esrgan=True, refine_first=False, apply_force_ratio=False):
     """Pipeline sur une PIL Image, renvoie (image, timings_dict).
     do_esrgan=False -> img2img pur (saute l'etage ESRGAN, refine sur l'image native).
     refine_first=True -> refine PUIS ESRGAN (la diffusion tourne a la resolution
-    native = bien plus rapide), au lieu de ESRGAN PUIS refine (detail en haute-def)."""
+    native = bien plus rapide), au lieu de ESRGAN PUIS refine (detail en haute-def).
+    apply_force_ratio=True + FORCE_RATIO defini -> recadre l'ENTREE au ratio choisi
+    (crop to fit, facon Fooocus) avant traitement. Sinon: ratio natif preserve."""
     timings = {"esrgan": 0.0, "refine": 0.0}
     image = image.convert("RGB")
+    if apply_force_ratio and FORCE_RATIO:
+        r = _parse_ratio(FORCE_RATIO)
+        if r:
+            _before = image.size
+            image = _crop_to_ratio(image, r[0], r[1])
+            _log(f"force ratio {r[0]}:{r[1]} -> crop {_before[0]}x{_before[1]} "
+                 f"to {image.size[0]}x{image.size[1]}")
     w0, h0 = image.size
     use_esrgan = bool(do_esrgan and esrgan_model)
     do_refine = float(denoise) > 0.001

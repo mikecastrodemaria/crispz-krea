@@ -224,7 +224,7 @@ from cz_pipeline import (  # noqa: E402,F401
     list_checkpoints, list_loras, set_checkpoints_dir, set_checkpoints_extra_dir,
     resolve_checkpoint, set_loras_dir, lora_keywords,
     set_omni_model, check_omni_available, set_offload_mode, free_vram, set_loras,
-    set_sampler, SAMPLER_CHOICES, set_schedule, SCHEDULE_CHOICES,
+    set_sampler, SAMPLER_CHOICES, set_schedule, SCHEDULE_CHOICES, set_force_ratio,
     generate, generate_omni, inpaint_run, outpaint, outpaint_directions, reframe,
     txt2img_run, process_one, round_to_multiple, _reframe_canvas, _gen_meta,
 )
@@ -401,7 +401,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
                 result, t = process_one(src, esrgan_model, factor, denoise, steps,
                                         prompt, seed, tile, overlap,
                                         refine_tile=refine_tile, refine_overlap=refine_overlap,
-                                        do_esrgan=do_esrgan, refine_first=refine_first)
+                                        do_esrgan=do_esrgan, refine_first=refine_first,
+                                        apply_force_ratio=True)
                 _srcbase = os.path.splitext(os.path.basename(p))[0]
                 _tag = f"{_srcbase}_" + ("upscaled" if do_esrgan else "img2img")
                 dst = build_output_path(p, save_mode, output_dir, output_format,
@@ -439,7 +440,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
     result, t = process_one(src_img, esrgan_model, factor, denoise, steps,
                             prompt, seed, tile, overlap,
                             refine_tile=refine_tile, refine_overlap=refine_overlap,
-                            do_esrgan=do_esrgan, refine_first=refine_first)
+                            do_esrgan=do_esrgan, refine_first=refine_first,
+                            apply_force_ratio=True)
     dst = None
     _srcbase = os.path.splitext(os.path.basename(source_path))[0] if source_path else None
     _tag = (f"{_srcbase}_" if _srcbase else "") + ("upscaled" if do_esrgan else "img2img")
@@ -759,6 +761,12 @@ def _set_aspect(name):
     """UI: applique un ratio d'aspect -> (width, height)."""
     w, h = ASPECT_RATIOS.get(name, (1024, 1024))
     return w, h
+
+
+def _ui_set_force_ratio(on, aspect_name):
+    """UI: (dés)active le ratio force pour Upscale/img2img. ON -> crop l'entree au ratio
+    de l'Aspect ratio choisi ; OFF -> ratio natif preserve. Pose l'etat dans cz_pipeline."""
+    set_force_ratio(aspect_name if on else "")
 
 
 def _set_performance(name):
@@ -1561,6 +1569,12 @@ def build_ui():
                         aspect = gr.Dropdown(list(ASPECT_RATIOS),
                                              value=CONFIG.get("default_aspect_ratio", "1024 x 1024  (1:1)"),
                                              label="Aspect ratio")
+                        force_ratio_cb = gr.Checkbox(
+                            value=bool(cz_pipeline.FORCE_RATIO),
+                            label="Force aspect ratio on Upscale/img2img (crop input to fit)",
+                            info="When ON, the loaded image is centre-cropped to the Aspect ratio "
+                                 "above before Upscale/img2img (Fooocus-style). OFF = keep the "
+                                 "input's native ratio.")
                         with gr.Row():
                             width = gr.Slider(256, 2048, value=int(CONFIG.get("default_width", 1024)),
                                               step=16, label="Width")
@@ -1772,7 +1786,9 @@ def build_ui():
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
         use_input.change(lambda v: gr.update(visible=bool(v)), use_input, input_group)
-        aspect.change(_set_aspect, [aspect], [width, height])
+        aspect.change(_set_aspect, [aspect], [width, height]) \
+              .then(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
+        force_ratio_cb.change(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
         performance.change(_set_performance, [performance], [gen_steps, guidance])
         style_search.change(_filter_styles, [style_search, styles], [styles])
 
