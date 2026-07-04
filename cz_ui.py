@@ -22,6 +22,7 @@ warnings.filterwarnings(
     "ignore", category=DeprecationWarning,
     message=r"The '(theme|css|js)' parameter in the Blocks constructor will be removed")
 import base64
+import csv
 import glob
 import time
 import uuid
@@ -1445,6 +1446,7 @@ def _ui_queue_run(items, history, progress=gr.Progress(track_tqdm=True)):
     if not items:
         return ([], *_q_render([]), gr.update(), "*Queue empty.*", history, history)
     total, done, gallery_all, rep = len(items), 0, [], ""
+    touched_gids = set()
     while items:
         job = items[0]
         _log(f"running job {done + 1}/{total}: {job['label']}", mod="queue")
@@ -1454,6 +1456,20 @@ def _ui_queue_run(items, history, progress=gr.Progress(track_tqdm=True)):
             vals[_Q_HISTORY_IDX] = history
             g, rep, history, _hg = _ui_generate(*vals, progress=progress)
             gallery_all.extend(list(g or []))
+            # Cellule d'une grille X/Y/Z: memorise la 1re image (reduite) pour la planche.
+            xj = job.get("xyz")
+            if xj and g:
+                try:
+                    im = _as_pil(g[0])
+                    if im is not None:
+                        im = im.copy()
+                        im.thumbnail((XYZ_THUMB, XYZ_THUMB), Image.LANCZOS)
+                        meta = _XYZ_PENDING.get(xj["gid"])
+                        if meta is not None:
+                            meta.setdefault("cells", {})[(xj["ix"], xj["iy"], xj["iz"])] = im
+                            touched_gids.add(xj["gid"])
+                except Exception as e:
+                    _log(f"cell capture failed ({e})", mod="xyz")
         except Exception as e:
             _log(f"job failed ({e}); continuing with next", mod="queue")
             rep = f"Job failed: {e}"
@@ -1462,11 +1478,292 @@ def _ui_queue_run(items, history, progress=gr.Progress(track_tqdm=True)):
         if cz_pipeline._STOP:
             _log(f"stopped; queue PAUSED, {len(items)} job(s) remaining", mod="queue")
             break
+    # Assemblage des planches X/Y/Z touchees pendant ce run (cellules cumulees a travers
+    # pause/reprise). gid libere quand plus aucun job de cette grille n'est en file.
+    for gid in sorted(touched_gids):
+        meta = _XYZ_PENDING.get(gid)
+        if not meta:
+            continue
+        try:
+            for p in _xyz_assemble(meta, meta.get("cells", {}), thumb=XYZ_THUMB):
+                gallery_all.append(_dl_path(Image.open(p), p))
+        except Exception as e:
+            _log(f"assembly failed ({e})", mod="xyz")
+        if not any((j.get("xyz") or {}).get("gid") == gid for j in items):
+            _XYZ_PENDING.pop(gid, None)
     if items and cz_pipeline._STOP:
         status = f"Queue paused after {done}/{total} job(s) — {len(items)} remaining (Run queue to resume)."
     else:
         status = f"Queue done: {done} job(s)."
     return (items, *_q_render(items), gallery_all, f"{status}  \n{rep}", history, history)
+
+
+# ---- X/Y/Z grid: combos de parametres -> jobs de la Job queue + planche annotee ----
+# Config: bloc "xyz_grid" de config.txt. Necessite job_queue (reutilise snapshots,
+# runner et pause Stop). enabled=false -> aucun composant, zero cout.
+_XYZ_CFG = CONFIG.get("xyz_grid") if isinstance(CONFIG.get("xyz_grid"), dict) else {}
+XYZ_ENABLED = bool(_XYZ_CFG.get("enabled", True)) and JOB_QUEUE_ENABLED
+XYZ_MAX_JOBS = int(_XYZ_CFG.get("max_jobs", 100))
+XYZ_THUMB = int(_XYZ_CFG.get("thumb", 512))
+
+# Table des axes: kind=val -> _gen_inputs[idx]; kind=ms -> etat modele; kinds speciaux
+# geres dans _xyz_apply. choices=callable -> liste fermee evaluee au build.
+_XYZ_AXES = {
+    "(none)":       None,
+    "Checkpoint":   {"kind": "checkpoint"},
+    "Sampler":      {"kind": "ms", "key": "sampler", "choices": lambda: list(SAMPLER_CHOICES)},
+    "Schedule":     {"kind": "ms", "key": "schedule", "choices": lambda: list(SCHEDULE_CHOICES)},
+    "Steps":        {"kind": "val", "idx": 15, "cast": int},
+    "Guidance":     {"kind": "val", "idx": 18, "cast": float},
+    "Seed":         {"kind": "val", "idx": 17, "cast": int},
+    "ESRGAN model": {"kind": "val", "idx": 20, "cast": str, "choices": lambda: list_esrgan_models()},
+    "Factor":       {"kind": "val", "idx": 24, "cast": float},
+    "Denoise":      {"kind": "val", "idx": 25, "cast": float},
+    "Tile":         {"kind": "val", "idx": 27, "cast": int},
+    "Refine tile":  {"kind": "val", "idx": 29, "cast": int},
+    "LoRA weight":  {"kind": "lora_weight"},
+    "Performance":  {"kind": "performance"},
+    "Prompt S/R":   {"kind": "sr"},
+}
+
+
+def _xyz_parse_values(s):
+    """Parse un champ de valeurs CSV; les guillemets protegent les virgules
+    (csv stdlib). Renvoie la liste des valeurs non vides."""
+    if not (s or "").strip():
+        return []
+    row = next(csv.reader([s], skipinitialspace=True))
+    return [v.strip() for v in row if v.strip()]
+
+
+def _xyz_match(value, choices):
+    """Resout `value` dans une liste fermee: exact insensible a la casse, sinon
+    sous-chaine unique. Renvoie (choix, None) ou (None, message d'erreur)."""
+    v = str(value).lower().strip()
+    exact = [c for c in choices if str(c).lower() == v]
+    if exact:
+        return exact[0], None
+    part = [c for c in choices if v in str(c).lower()]
+    if len(part) == 1:
+        return part[0], None
+    if not part:
+        return None, f"'{value}' not found (choices: {', '.join(map(str, choices))[:120]})"
+    return None, f"'{value}' is ambiguous ({', '.join(map(str, part))[:120]})"
+
+
+def _xyz_validate_axis(name, raw_values, base_vals, base_ms):
+    """Valide/normalise les valeurs d'un axe AVANT le build. Renvoie (values, None)
+    ou (None, message d'erreur)."""
+    spec = _XYZ_AXES.get(name)
+    if not spec:
+        return None, f"unknown axis '{name}'"
+    if not raw_values:
+        return None, f"{name}: no values"
+    kind = spec.get("kind")
+    if kind == "sr":
+        term = raw_values[0]
+        if len(raw_values) < 2:
+            return None, "Prompt S/R needs the search term + at least one replacement"
+        if term not in str(base_vals[_Q_IDX["prompt"]] or ""):
+            return None, f"Prompt S/R: '{term}' not found in the prompt"
+        return list(raw_values), None
+    if kind == "lora_weight":
+        if not base_ms.get("loras"):
+            return None, "LoRA weight: no active LoRA (pick one in Models first)"
+        try:
+            return [float(v) for v in raw_values], None
+        except ValueError as e:
+            return None, f"LoRA weight: {e}"
+    if kind == "performance":
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, list(PERFORMANCE))
+            if err:
+                return None, f"Performance: {err}"
+            out.append(m)
+        return out, None
+    if kind == "checkpoint":
+        choices = ZIMAGE_BASE_REPOS + list_checkpoints()
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, choices)
+            if err:
+                return None, f"Checkpoint: {err}"
+            out.append(m)
+        return out, None
+    choices = spec.get("choices")
+    if choices:
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, choices())
+            if err:
+                return None, f"{name}: {err}"
+            out.append(m)
+        return out, None
+    cast = spec.get("cast", str)
+    try:
+        return [cast(v) for v in raw_values], None
+    except ValueError:
+        return None, f"{name}: non-numeric value in {raw_values}"
+
+
+def _xyz_apply(name, value, vals, ms):
+    """Applique la valeur d'un axe a un snapshot (vals, ms) — mutation en place."""
+    spec = _XYZ_AXES[name]
+    kind = spec.get("kind")
+    if kind == "val":
+        vals[spec["idx"]] = value
+    elif kind == "ms":
+        ms[spec["key"]] = value
+    elif kind == "checkpoint":
+        if value in ZIMAGE_BASE_REPOS:
+            ms["base_repo"], ms["transformer"] = value, None
+        else:
+            ms["transformer"] = resolve_checkpoint(value)
+    elif kind == "lora_weight":
+        ms["loras"] = [(p, float(value)) for p, _w in (ms.get("loras") or [])]
+    elif kind == "performance":
+        st, g = PERFORMANCE[value]
+        vals[_Q_IDX["gen_steps"]], vals[18] = int(st), float(g)
+    elif kind == "sr":
+        term = spec["_term"]
+        if str(value) != term:
+            vals[_Q_IDX["prompt"]] = str(vals[_Q_IDX["prompt"]] or "").replace(term, str(value))
+
+
+def _xyz_build_jobs(axes, base_vals, base_ms):
+    """Construit les jobs du produit croise. axes = liste ordonnee [(nom, values)] pour
+    X (requis), Y, Z (optionnels). Renvoie (jobs, meta) — meta decrit la planche."""
+    gid = time.strftime("%Y%m%d_%H%M%S")
+    (xn, xv) = axes[0]
+    (yn, yv) = axes[1] if len(axes) > 1 else (None, [None])
+    (zn, zv) = axes[2] if len(axes) > 2 else (None, [None])
+    # Prompt S/R: memorise le terme cherche (1re valeur) pour _xyz_apply.
+    for n, v in axes:
+        if _XYZ_AXES[n].get("kind") == "sr":
+            _XYZ_AXES[n]["_term"] = str(v[0])
+    jobs = []
+    for iz, z in enumerate(zv):
+        for iy, y in enumerate(yv):
+            for ix, x in enumerate(xv):
+                vals, ms = list(base_vals), dict(base_ms, loras=list(base_ms.get("loras") or []))
+                _xyz_apply(xn, x, vals, ms)
+                if yn is not None:
+                    _xyz_apply(yn, y, vals, ms)
+                if zn is not None:
+                    _xyz_apply(zn, z, vals, ms)
+                parts = [f"{xn}={x}"] + ([f"{yn}={y}"] if yn else []) + ([f"{zn}={z}"] if zn else [])
+                jobs.append({"vals": vals, "ms": ms, "label": "xyz · " + " · ".join(parts),
+                             "xyz": {"gid": gid, "ix": ix, "iy": iy, "iz": iz}})
+    meta = {"gid": gid, "x": (xn, [str(v) for v in xv]),
+            "y": (yn, [str(v) for v in yv]) if yn else None,
+            "z": (zn, [str(v) for v in zv]) if zn else None,
+            "out_dir": str(base_vals[32] or DEFAULT_OUTPUT_DIR)}
+    return jobs, meta
+
+
+def _as_pil(item):
+    """PIL depuis un item de galerie (_dl_path: chemin str ou PIL)."""
+    if isinstance(item, str):
+        return Image.open(item).convert("RGB")
+    if isinstance(item, (tuple, list)) and item:
+        return _as_pil(item[0])
+    return item.convert("RGB") if item is not None else None
+
+
+def _xyz_font(size):
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _xyz_assemble(meta, cells, thumb=512):
+    """Assemble les planches annotees (une par valeur de Z): X en colonnes, Y en lignes,
+    vignettes letterbox `thumb`px, marges pour les libelles. cells = {(ix,iy,iz): PIL}.
+    Renvoie la liste des chemins sauves."""
+    from PIL import ImageDraw
+    xn, xv = meta["x"]
+    yn, yv = meta["y"] if meta["y"] else (None, [""])
+    zn, zv = meta["z"] if meta["z"] else (None, [""])
+    left = 200 if yn else 20
+    top_hdr, top_lbl = 44, 40
+    bg, fg, line = (17, 24, 42), (223, 230, 242), (60, 72, 100)
+    f_lbl, f_hdr = _xyz_font(22), _xyz_font(26)
+    out_root = _ab_resolve_dir(meta["out_dir"])
+    sheet_dir = os.path.join(out_root, f"xyz_{meta['gid']}")
+    os.makedirs(sheet_dir, exist_ok=True)
+    saved = []
+    for iz, z in enumerate(zv):
+        w = left + len(xv) * (thumb + 8) + 20
+        h = top_hdr + top_lbl + len(yv) * (thumb + 8) + 20
+        sheet = Image.new("RGB", (w, h), bg)
+        d = ImageDraw.Draw(sheet)
+        hdr = f"X: {xn}" + (f"  ·  Y: {yn}" if yn else "") + (f"  ·  Z: {zn} = {z}" if zn else "")
+        d.text((left, 10), hdr, fill=fg, font=f_hdr)
+        for ix, x in enumerate(xv):
+            cx = left + ix * (thumb + 8)
+            d.text((cx + 6, top_hdr + 8), str(x)[:40], fill=fg, font=f_lbl)
+        for iy, y in enumerate(yv):
+            cy = top_hdr + top_lbl + iy * (thumb + 8)
+            if yn:
+                d.text((10, cy + thumb // 2 - 12), str(y)[:22], fill=fg, font=f_lbl)
+            for ix in range(len(xv)):
+                cx = left + ix * (thumb + 8)
+                img = cells.get((ix, iy, iz))
+                if img is None:
+                    d.rectangle([cx, cy, cx + thumb, cy + thumb], outline=line, width=2)
+                    d.text((cx + thumb // 2 - 8, cy + thumb // 2 - 12), "—", fill=line, font=f_hdr)
+                    continue
+                t = img.copy()
+                t.thumbnail((thumb, thumb), Image.LANCZOS)
+                sheet.paste(t, (cx + (thumb - t.width) // 2, cy + (thumb - t.height) // 2))
+        suffix = f"_{zn}-{z}" if zn else ""
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(suffix))[:60]
+        dst = os.path.join(sheet_dir, f"sheet{safe or ''}.png")
+        sheet.save(dst)
+        saved.append(dst)
+        _log(f"sheet saved: {dst}", mod="xyz")
+    return saved
+
+
+def _ui_xyz_build(*args):
+    """'Build grid -> queue': valide les axes, produit les combos, empile les jobs."""
+    *gen_vals, xa, xv, ya, yv, za, zv, items = args
+    items = list(items or [])
+    axes_in = [(a, v) for a, v in ((xa, xv), (ya, yv), (za, zv)) if a and a != "(none)"]
+    if not axes_in:
+        return (items, *_q_render(items), "Pick at least the X axis.")
+    names = [a for a, _v in axes_in]
+    if len(set(names)) != len(names):
+        return (items, *_q_render(items), "Each axis must vary a different parameter.")
+    base_ms = _q_model_state()
+    axes = []
+    for name, raw in axes_in:
+        values, err = _xyz_validate_axis(name, _xyz_parse_values(raw), list(gen_vals), base_ms)
+        if err:
+            return (items, *_q_render(items), f"❌ {err}")
+        axes.append((name, values))
+    total = 1
+    for _n, v in axes:
+        total *= len(v)
+    if total > XYZ_MAX_JOBS:
+        return (items, *_q_render(items),
+                f"❌ {total} combos > max_jobs ({XYZ_MAX_JOBS}). Reduce the value lists "
+                f"(or raise xyz_grid.max_jobs in config.txt).")
+    jobs, meta = _xyz_build_jobs(axes, list(gen_vals), base_ms)
+    _XYZ_PENDING[meta["gid"]] = meta
+    items += jobs
+    _log(f"grid built: {total} job(s) queued (gid {meta['gid']})", mod="xyz")
+    return (items, *_q_render(items, len(items) - 1),
+            f"Built **{total}** job(s) ({' × '.join(str(len(v)) for _n, v in axes)}). "
+            f"Press **Run queue** to execute; the annotated sheet(s) will be saved in "
+            f"`xyz_{meta['gid']}/` and shown in the gallery.")
+
+
+# Planches en attente d'assemblage: gid -> meta (rempli au build, consomme au run).
+_XYZ_PENDING = {}
 
 
 # JS injecte au chargement: force le theme sombre, preview de style au survol,
@@ -1557,6 +1854,26 @@ def build_ui():
                             queue_down_btn = gr.Button("Down", size="sm", scale=0, min_width=70)
                             queue_rm_btn = gr.Button("Remove", size="sm", scale=0, min_width=90)
                             queue_clear_btn = gr.Button("Clear", size="sm", scale=0, min_width=70)
+
+                if XYZ_ENABLED:
+                    with gr.Accordion("X/Y/Z grid", open=False):
+                        gr.Markdown("*Vary 1–3 parameters (comma-separated values; use quotes to "
+                                    "protect commas). Each combo becomes a queued job; when it has "
+                                    "run, an annotated contact sheet is saved (one per Z value) and "
+                                    "shown in the gallery. Prompt S/R: first value = search term, "
+                                    "then its replacements.*")
+                        _ax = [k for k in _XYZ_AXES]
+                        with gr.Row():
+                            xyz_xa = gr.Dropdown(_ax, value="Steps", label="X axis", scale=1)
+                            xyz_xv = gr.Textbox(label="X values", placeholder="e.g. 4, 8, 12", scale=3)
+                        with gr.Row():
+                            xyz_ya = gr.Dropdown(_ax, value="(none)", label="Y axis", scale=1)
+                            xyz_yv = gr.Textbox(label="Y values", scale=3)
+                        with gr.Row():
+                            xyz_za = gr.Dropdown(_ax, value="(none)", label="Z axis", scale=1)
+                            xyz_zv = gr.Textbox(label="Z values", scale=3)
+                        xyz_build_btn = gr.Button("Build grid → queue", variant="primary", size="sm")
+                        xyz_status = gr.Markdown("")
 
                 with gr.Row():
                     use_input = gr.Checkbox(value=False, label="Input Image", min_width=160)
@@ -2042,6 +2359,11 @@ def build_ui():
             queue_clear_btn.click(_ui_queue_clear, [queue_state], _q_panel)
             queue_run_btn.click(_ui_queue_run, [queue_state, history],
                                 [*_q_panel, out, report, history, history_gallery])
+        if XYZ_ENABLED:
+            xyz_build_btn.click(_ui_xyz_build,
+                                [*_gen_inputs, xyz_xa, xyz_xv, xyz_ya, xyz_yv, xyz_za, xyz_zv,
+                                 queue_state],
+                                [*_q_panel, xyz_status])
         # Clic sur une image du resultat -> bouton Download avec le vrai nom de fichier.
         out.select(_pick_download, None, [result_dl])
         # Vision Mix & Generate: fusionne les refs en un prompt, puis genere (txt2img).

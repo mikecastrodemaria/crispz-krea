@@ -2,7 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
-> Current version: **1.1.0** — see [CHANGELOG.md](CHANGELOG.md).
+> Current version: **1.2.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
@@ -16,6 +16,10 @@ SwarmUI. On top of crispz's upscaler it adds:
   into a labeled job list; `Run queue` chains them unattended (overnight batches with
   different models/settings). **Stop pauses the queue** — remaining jobs are kept. VRAM
   is purged automatically only when the model changes between jobs.
+- **X/Y/Z grid**: vary 1–3 parameters (checkpoint, sampler, steps, guidance, denoise,
+  ESRGAN model, LoRA weight, Performance preset, Prompt S/R…) — every combo becomes a
+  queued job and the run ends with an **annotated contact sheet** per Z value (X columns ×
+  Y rows) saved in the output folder and shown in the gallery.
 - **Inpaint / Outpaint** (one tab, 3 modes): **Brush** repaints a painted mask ·
   **Expand sides** outpaints Left/Right/Top/Bottom (+ **Center**) ~30% per side ·
   **Reframe** to a new aspect ratio (**Contain** = keep the whole image and fill the
@@ -166,6 +170,29 @@ Queue several generations with different settings and run them unattended.
 - Config (`config.txt`): `"job_queue": {"enabled": true}`. Set `false` to remove the
   panel entirely (no components created, zero cost).
 - v1 limits: in-memory queue (cleared on page reload), sequential execution.
+
+## X/Y/Z grid
+
+Compare parameter variations side by side on an annotated contact sheet.
+
+1. Open **X/Y/Z grid** (accordion under the Job queue), pick the **X axis** (and
+   optionally Y and Z) and type the values, comma-separated — quotes protect commas
+   (`"red, bright", blue`).
+2. **Build grid → queue**: every combo becomes a job in the Job queue (validated first:
+   numbers cast, closed lists matched case-insensitively — `uni` resolves to `unipc` —
+   combo count capped by `max_jobs`).
+3. **Run queue**. When the grid has run, one **annotated sheet per Z value** (X in
+   columns, Y in rows, 512 px cells, missing cells drawn as placeholders) is saved under
+   `<output>/xyz_<timestamp>/` and appended to the result gallery. Pause/resume keeps the
+   collected cells, so the final sheet is complete.
+
+Axes: `Checkpoint`, `Sampler`, `Schedule`, `Steps`, `Guidance`, `Seed`, `ESRGAN model`,
+`Factor`, `Denoise`, `Tile`, `Refine tile`, `LoRA weight` (all active LoRAs),
+`Performance` (applies the preset), `Prompt S/R` (first value = search term, then its
+replacements; the term must exist in the prompt).
+
+Config (`config.txt`): `"xyz_grid": {"enabled": true, "max_jobs": 100, "thumb": 512}` —
+requires `job_queue`; `enabled=false` removes the panel entirely.
 
 ## Inpaint / Outpaint (Advanced tab)
 

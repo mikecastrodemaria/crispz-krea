@@ -3,6 +3,30 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.2.0 — 2026-07-05 — X/Y/Z comparison grid
+
+Compare parameter variations on an annotated contact sheet, powered by the job queue.
+
+- **X/Y/Z grid panel** (accordion under the Job queue): pick 1–3 axes and their values
+  (comma-separated; quotes protect commas). **Build grid → queue** turns every combo
+  into a queued job; run/pause/reorder like any other jobs.
+- **Axes**: Checkpoint, Sampler, Schedule, Steps, Guidance, Seed, ESRGAN model, Factor,
+  Denoise, Tile, Refine tile, LoRA weight (applies to all active LoRAs), **Performance**
+  (applies the whole preset), **Prompt S/R** (a1111-style search & replace: first value =
+  search term, next values = replacements; validated against the prompt at build time).
+- **Validation at build**: numeric casts, closed lists resolved case-insensitively (unique
+  substring accepted, e.g. `uni` → `unipc`), duplicate axes rejected, combo count capped
+  (`max_jobs`, default 100).
+- **Contact sheets** (Pillow, no new dependency): one annotated sheet per Z value — X in
+  columns, Y in rows, letterboxed cells (`thumb`, default 512 px), missing cells drawn as
+  placeholders — saved under `<output>/xyz_<timestamp>/` and appended to the result
+  gallery. Cells are accumulated across pause/resume, so a paused grid still ends with a
+  complete sheet.
+- Config block: `"xyz_grid": {"enabled": true, "max_jobs": 100, "thumb": 512}` (requires
+  `job_queue`); `enabled=false` creates nothing (zero cost).
+- Files: `cz_ui.py` (axes table, validation, plan builder, assembler, panel),
+  `config-sample.txt`, `tests/test_xyz.py`.
+
 ## 1.1.0 — 2026-07-04 — Job queue
 
 Queue up generations with different settings and run them unattended (e.g. overnight).
