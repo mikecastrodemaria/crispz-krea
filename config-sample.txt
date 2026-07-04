@@ -9,6 +9,8 @@
     "ollama_vision_blocklist": [],
     "ollama_keep_alive": 0,
     "ollama_cpu": false,
+    "job_queue": {"enabled": true},
+    "_job_queue_help": "Job queue panel ('+ Queue' snapshots all settings incl. model; 'Run queue' chains them; Stop pauses). enabled=false removes the UI entirely (zero cost).",
     "caption_model": "blip-large",
     "_caption_model_help": "Local auto-describe model (no Ollama): blip-large (default) | blip-base",
     "improve_local_keywords": "highly detailed, sharp focus, professional photography, intricate details, natural lighting, high quality, 8k",

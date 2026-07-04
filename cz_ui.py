@@ -47,6 +47,7 @@ except Exception:
 # Fondation (config, chemins, defauts, logging, device) -> cz_core.py
 import cz_core
 from cz_core import (  # noqa: E402,F401
+    APP_VERSION,
     HERE, PREFS_PATH, CONFIG_PATH, CONFIG_SAMPLE_PATH,
     DEFAULT_MODEL, DEFAULT_FACTOR, DEFAULT_DENOISE, DEFAULT_STEPS, DEFAULT_TILE,
     DEFAULT_OVERLAP, DEFAULT_REFINE_TILE, DEFAULT_REFINE_OVERLAP, DEFAULT_SAVE_MODE,
@@ -1334,6 +1335,140 @@ def _pick_download(evt: gr.SelectData):
     return gr.DownloadButton(visible=False)
 
 
+# ---- Job queue: snapshots complets de reglages empiles, executes en serie ----
+# Config: bloc "job_queue" de config.txt. enabled=false -> AUCUN composant cree,
+# aucun handler cable (contrat zero-cout quand off).
+_JQ_CFG = CONFIG.get("job_queue") if isinstance(CONFIG.get("job_queue"), dict) else {}
+JOB_QUEUE_ENABLED = bool(_JQ_CFG.get("enabled", True))
+
+# Indices dans _gen_inputs (a garder synchro avec la liste dans build_ui).
+_Q_HISTORY_IDX = 34   # l'historique de session est injecte LIVE au run, pas du snapshot
+_Q_IDX = {"prompt": 0, "use_input": 4, "width": 13, "height": 14,
+          "gen_steps": 15, "image_number": 16, "seed": 17}
+
+
+def _q_model_state():
+    """Snapshot de l'etat modele GLOBAL (hors _gen_inputs): checkpoint/transformer,
+    LoRA actives, sampler/schedule. Rend chaque job autonome et reproductible."""
+    return {"base_repo": cz_pipeline.BASE_REPO,
+            "transformer": cz_pipeline.ZIMAGE_TRANSFORMER,
+            "loras": list(cz_pipeline.LORAS),
+            "sampler": cz_pipeline.SAMPLER,
+            "schedule": cz_pipeline.SCHEDULE}
+
+
+def _q_restore_model_state(ms):
+    """Restaure l'etat modele d'un job via les setters existants -> free_vram() se
+    declenche automatiquement si (et seulement si) le modele change entre 2 jobs."""
+    if ms.get("base_repo"):
+        set_zimage_model(ms["base_repo"])
+    set_zimage_transformer(ms.get("transformer") or "")
+    set_loras([(p, w) for p, w in (ms.get("loras") or [])])
+    set_sampler(ms.get("sampler") or "euler")
+    set_schedule(ms.get("schedule") or "sgm_uniform")
+
+
+def _q_label(vals, ms):
+    """Etiquette lisible d'un job (parametres cles) depuis le snapshot."""
+    mode = "img2img" if vals[_Q_IDX["use_input"]] else "txt2img"
+    model = os.path.basename(str(ms.get("transformer") or ms.get("base_repo") or "?"))
+    n = max(1, int(vals[_Q_IDX["image_number"]] or 1))
+    seed = int(vals[_Q_IDX["seed"]] if vals[_Q_IDX["seed"]] is not None else -1)
+    p = str(vals[_Q_IDX["prompt"]] or "").strip().replace("\n", " ")
+    lbl = (f"{mode} · {model} · {int(vals[_Q_IDX['width']])}x{int(vals[_Q_IDX['height']])} · "
+           f"{int(vals[_Q_IDX['gen_steps']])} steps · seed {seed} · x{n}")
+    if p:
+        lbl += f" · “{p[:40]}{'…' if len(p) > 40 else ''}”"
+    return lbl
+
+
+def _q_move(items, sel, delta):
+    """Deplace l'element sel de delta (liste pure). Renvoie (items, nouvelle selection)."""
+    items = list(items or [])
+    if sel is None or not (0 <= int(sel) < len(items)):
+        return items, None
+    i, j = int(sel), int(sel) + int(delta)
+    if not (0 <= j < len(items)):
+        return items, i
+    items[i], items[j] = items[j], items[i]
+    return items, j
+
+
+def _q_remove(items, sel):
+    """Supprime l'element sel (liste pure). Renvoie (items, selection ajustee)."""
+    items = list(items or [])
+    if sel is None or not (0 <= int(sel) < len(items)):
+        return items, None
+    items.pop(int(sel))
+    return items, (min(int(sel), len(items) - 1) if items else None)
+
+
+def _q_render(items, sel=None):
+    """Updates UI d'apres la file: (dropdown selection, markdown liste, label bouton)."""
+    choices = [(f"#{i + 1} {it['label']}", i) for i, it in enumerate(items)]
+    val = int(sel) if (sel is not None and 0 <= int(sel) < len(items)) else None
+    md = "\n".join(f"{i + 1}. {it['label']}" for i, it in enumerate(items)) or "*Queue empty.*"
+    return (gr.update(choices=choices, value=val), md,
+            gr.update(value=f"+ Queue ({len(items)})"))
+
+
+def _ui_queue_add(*args):
+    """'+ Queue': fige les 36 valeurs courantes + l'etat modele global, empile."""
+    *vals, items = args
+    job = {"vals": list(vals), "ms": _q_model_state()}
+    job["label"] = _q_label(job["vals"], job["ms"])
+    items = list(items or []) + [job]
+    _log(f"job added ({len(items)} queued): {job['label']}", mod="queue")
+    return (items, *_q_render(items, len(items) - 1))
+
+
+def _ui_queue_move(items, sel, delta):
+    items, sel = _q_move(items, sel, delta)
+    return (items, *_q_render(items, sel))
+
+
+def _ui_queue_remove(items, sel):
+    items, sel = _q_remove(items, sel)
+    return (items, *_q_render(items, sel))
+
+
+def _ui_queue_clear(items):
+    _log("queue cleared", mod="queue")
+    return ([], *_q_render([]))
+
+
+def _ui_queue_run(items, history, progress=gr.Progress(track_tqdm=True)):
+    """Execute la file en serie. Chaque job restaure son etat modele (purge VRAM auto au
+    changement) puis rejoue _ui_generate. Stop = interrompt le job courant et met la
+    file en PAUSE: les jobs restants demeurent empiles."""
+    items = list(items or [])
+    if not items:
+        return ([], *_q_render([]), gr.update(), "*Queue empty.*", history, history)
+    total, done, gallery_all, rep = len(items), 0, [], ""
+    while items:
+        job = items[0]
+        _log(f"running job {done + 1}/{total}: {job['label']}", mod="queue")
+        try:
+            _q_restore_model_state(job["ms"])
+            vals = list(job["vals"])
+            vals[_Q_HISTORY_IDX] = history
+            g, rep, history, _hg = _ui_generate(*vals, progress=progress)
+            gallery_all.extend(list(g or []))
+        except Exception as e:
+            _log(f"job failed ({e}); continuing with next", mod="queue")
+            rep = f"Job failed: {e}"
+        done += 1
+        items.pop(0)
+        if cz_pipeline._STOP:
+            _log(f"stopped; queue PAUSED, {len(items)} job(s) remaining", mod="queue")
+            break
+    if items and cz_pipeline._STOP:
+        status = f"Queue paused after {done}/{total} job(s) — {len(items)} remaining (Run queue to resume)."
+    else:
+        status = f"Queue done: {done} job(s)."
+    return (items, *_q_render(items), gallery_all, f"{status}  \n{rep}", history, history)
+
+
 # JS injecte au chargement: force le theme sombre, preview de style au survol,
 # et lightbox plein ecran au clic sur le rendu. __MAP__ = {nom_style: url_vignette}.
 def build_ui():
@@ -1350,7 +1485,7 @@ def build_ui():
     # Omni (multi-reference) propose seulement si un modele Omni/Edit est configure.
     omni_on = bool((cz_pipeline.OMNI_MODEL or "").strip())
 
-    with gr.Blocks(title="crispz-studio", theme=gr.themes.Default(), css=FOOOCUS_CSS, js=js_full) as demo:
+    with gr.Blocks(title=f"crispz-studio {APP_VERSION}", theme=gr.themes.Default(), css=FOOOCUS_CSS, js=js_full) as demo:
         # La galerie du dossier de sortie s'ouvre dans un nouvel onglet (Asset Browser),
         # via le bouton sous l'apercu. Pas de panneau galerie inline.
         gallery_url = gr.Textbox(visible=False)
@@ -1404,6 +1539,24 @@ def build_ui():
                               "Upscale pipeline (ESRGAN + refine), no manual step")
                     improve_btn = gr.Button("Improve prompt", scale=1, min_width=150)
                 improve_status = gr.Markdown("")
+
+                if JOB_QUEUE_ENABLED:
+                    queue_state = gr.State([])
+                    with gr.Accordion("Job queue", open=False):
+                        gr.Markdown("*'+ Queue' snapshots ALL current settings (incl. model, "
+                                    "LoRAs, sampler). 'Run queue' executes jobs in order; "
+                                    "**Stop** pauses the queue — remaining jobs are kept.*")
+                        with gr.Row():
+                            queue_add_btn = gr.Button("+ Queue (0)", size="sm", scale=1, min_width=140)
+                            queue_run_btn = gr.Button("Run queue", variant="primary", size="sm",
+                                                      scale=1, min_width=140)
+                        queue_md = gr.Markdown("*Queue empty.*")
+                        with gr.Row():
+                            queue_sel = gr.Dropdown([], label="Selected job", scale=4)
+                            queue_up_btn = gr.Button("Up", size="sm", scale=0, min_width=60)
+                            queue_down_btn = gr.Button("Down", size="sm", scale=0, min_width=70)
+                            queue_rm_btn = gr.Button("Remove", size="sm", scale=0, min_width=90)
+                            queue_clear_btn = gr.Button("Clear", size="sm", scale=0, min_width=70)
 
                 with gr.Row():
                     use_input = gr.Checkbox(value=False, label="Input Image", min_width=160)
@@ -1878,6 +2031,17 @@ def build_ui():
                        history, auto_upscale_cb]
         _gen_outputs = [out, report, history, history_gallery]
         btn.click(_ui_generate, inputs=_gen_inputs, outputs=_gen_outputs)
+        if JOB_QUEUE_ENABLED:
+            _q_panel = [queue_state, queue_sel, queue_md, queue_add_btn]
+            queue_add_btn.click(_ui_queue_add, [*_gen_inputs, queue_state], _q_panel)
+            queue_up_btn.click(lambda it, s: _ui_queue_move(it, s, -1),
+                               [queue_state, queue_sel], _q_panel)
+            queue_down_btn.click(lambda it, s: _ui_queue_move(it, s, +1),
+                                 [queue_state, queue_sel], _q_panel)
+            queue_rm_btn.click(_ui_queue_remove, [queue_state, queue_sel], _q_panel)
+            queue_clear_btn.click(_ui_queue_clear, [queue_state], _q_panel)
+            queue_run_btn.click(_ui_queue_run, [queue_state, history],
+                                [*_q_panel, out, report, history, history_gallery])
         # Clic sur une image du resultat -> bouton Download avec le vrai nom de fichier.
         out.select(_pick_download, None, [result_dl])
         # Vision Mix & Generate: fusionne les refs en un prompt, puis genere (txt2img).

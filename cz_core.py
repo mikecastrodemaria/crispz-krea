@@ -31,6 +31,9 @@ import base64
 import torch
 from PIL import Image
 
+# Version de l'application (affichee dans le titre; entrees CHANGELOG.md par version).
+APP_VERSION = "1.1.0"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PREFS_PATH = os.path.join(HERE, "preferences.json")
 CONFIG_PATH = os.path.join(HERE, "config.txt")
@@ -209,9 +212,12 @@ def set_log_level(level):
     return f"Log level: {name}"
 
 
-def _log(msg, level=1):
+def _log(msg, level=1, mod=None):
+    """Log console. mod (optionnel) = prefixe de module, ex. _log('...', mod='queue')
+    -> '[crispz][queue] ...'."""
     if LOG_LEVEL >= level:
-        print(f"[crispz] {msg}", file=sys.stderr, flush=True)
+        tag = f"[crispz][{mod}]" if mod else "[crispz]"
+        print(f"{tag} {msg}", file=sys.stderr, flush=True)
 
 
 def _dbg(msg):

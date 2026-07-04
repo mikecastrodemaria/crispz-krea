@@ -2,6 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
+> Current version: **1.1.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
@@ -11,6 +12,10 @@ SwarmUI. On top of crispz's upscaler it adds:
   image through the ESRGAN + refine pipeline — no manual step. CLI equivalent:
   `--txt2img --upscale` (see README_CLI.md).
 - **Image → Upscale** (the crispz pipeline): Real-ESRGAN + Z-Image refine, 4K tiling.
+- **Job queue**: `+ Queue` snapshots ALL current settings (incl. model, LoRAs, sampler)
+  into a labeled job list; `Run queue` chains them unattended (overnight batches with
+  different models/settings). **Stop pauses the queue** — remaining jobs are kept. VRAM
+  is purged automatically only when the model changes between jobs.
 - **Inpaint / Outpaint** (one tab, 3 modes): **Brush** repaints a painted mask ·
   **Expand sides** outpaints Left/Right/Top/Bottom (+ **Center**) ~30% per side ·
   **Reframe** to a new aspect ratio (**Contain** = keep the whole image and fill the
@@ -142,6 +147,25 @@ is in place: once a Z-Image Omni/Edit model ships, set it in `config.txt`
 (`"zimage_omni_model": "<HF repo or local diffusers folder>"`) **and restart** —
 the tab appears and multi-reference works. Use **Models → Check Omni availability**
 to see if it has been released.
+
+## Job queue
+
+Queue several generations with different settings and run them unattended.
+
+- **`+ Queue`** (under the prompt area) freezes a complete snapshot: every Generate
+  setting **plus the current model state** (checkpoint/transformer, LoRAs + weights,
+  sampler/schedule). Jobs are self-contained — you can change the model afterwards, each
+  job restores its own. The button shows the pending count.
+- **Job queue panel** (accordion): labeled list, select a job, **Up / Down / Remove /
+  Clear**, then **`Run queue`** to execute in order (normal progress bar, history and
+  file saving as usual).
+- **Stop = pause**: the current job is interrupted, remaining jobs stay queued; press
+  `Run queue` to resume. A failed job logs `[crispz][queue] …` and the queue continues.
+- VRAM purge between jobs happens **only** when the model actually changes (the existing
+  model-cache invalidation does the work — zero cost for same-model series).
+- Config (`config.txt`): `"job_queue": {"enabled": true}`. Set `false` to remove the
+  panel entirely (no components created, zero cost).
+- v1 limits: in-memory queue (cleared on page reload), sequential execution.
 
 ## Inpaint / Outpaint (Advanced tab)
 
