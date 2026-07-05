@@ -2,7 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
-> Current version: **1.3.0** — see [CHANGELOG.md](CHANGELOG.md).
+> Current version: **1.4.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
@@ -20,6 +20,10 @@ SwarmUI. On top of crispz's upscaler it adds:
   ESRGAN model, LoRA weight, Performance preset, Prompt S/R…) — every combo becomes a
   queued job and the run ends with an **annotated contact sheet** per Z value (X columns ×
   Y rows) saved in the output folder and shown in the gallery.
+- **Tag autocomplete** in the prompt/negative fields: suggestions as you type from tag
+  CSVs (downloaded once into `tags/`; drop any `.csv` there to add a source) merged with
+  your local `__wildcards__`. Dropdown under the caret, ↑/↓ + Tab/Enter, Escape;
+  popularity-ranked, indexed (~sub-ms per keystroke).
 - **Inpaint / Outpaint** (one tab, 3 modes): **Brush** repaints a painted mask ·
   **Expand sides** outpaints Left/Right/Top/Bottom (+ **Center**) ~30% per side ·
   **Reframe** to a new aspect ratio (**Contain** = keep the whole image and fill the
@@ -195,6 +199,26 @@ replacements; the term must exist in the prompt).
 
 Config (`config.txt`): `"xyz_grid": {"enabled": true, "max_jobs": 100, "thumb": 512}` —
 requires `job_queue`; `enabled=false` removes the panel entirely.
+
+## Tag autocomplete (prompt fields)
+
+Suggestions appear under the caret while typing in the **prompt** and **negative**
+fields (from 2 typed characters in the current comma-delimited token).
+
+- **Keys**: ↑/↓ navigate · **Tab / Enter** insert · **Escape** close · click works too.
+  Inserted tags get underscores replaced by spaces; `__wildcard__` entries are kept
+  verbatim.
+- **Sources**: the CSVs in `tag_autocomplete.sources` are downloaded **once** into
+  `tags/` (atomic, with console progress). Drop any extra `.csv` in `tags/` to add a
+  source — rich format `name,category,count,"alias1,alias2"` or one word per line.
+  Your **wildcards** are merged in as `__name__` entries with top priority. Aliases
+  match too (shown alongside the tag).
+- **Performance**: the index is built once in the browser (popularity sort, dedup,
+  2-char prefix buckets, early exit at `max_results`). Timings are logged in the
+  browser console: `[tagac] ready in N ms` and a rolling per-keystroke average.
+- Config (`config.txt`):
+  `"tag_autocomplete": {"enabled": true, "max_results": 8, "sources": [<urls>]}` —
+  `enabled=false` downloads nothing and injects no script (zero cost).
 
 ## Inpaint / Outpaint (Advanced tab)
 

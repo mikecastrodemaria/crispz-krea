@@ -1835,6 +1835,43 @@ def _ui_xyz_build(*args):
 _XYZ_PENDING = {}
 
 
+# ---- Tag autocomplete (prompts): CSV tags/ + assets locaux, dropdown sous le caret ----
+# Config: bloc "tag_autocomplete". enabled=false -> pas d'import cz_tags, pas de
+# telechargement, pas de JS injecte (contrat zero-cout quand off).
+_TAC_CFG = CONFIG.get("tag_autocomplete") if isinstance(CONFIG.get("tag_autocomplete"), dict) else {}
+TAGAC_ENABLED = bool(_TAC_CFG.get("enabled", True))
+TAGAC_SOURCES = _TAC_CFG.get("sources", [
+    "https://raw.githubusercontent.com/DominikDoom/a1111-sd-webui-tagcomplete/main/tags/danbooru.csv",
+])
+TAGAC_MAX = int(_TAC_CFG.get("max_results", 8))
+
+
+def _tagac_head():
+    """Prepare le <script> d'autocomplete (ou None): telecharge les sources une fois
+    (atomique + progression), construit le payload client (URLs des CSV + wildcards
+    locaux). Tout echec -> warning et feature simplement absente (le boot continue)."""
+    if not TAGAC_ENABLED:
+        return None
+    try:
+        from cz_tags import ensure_tag_sources, list_tag_files
+        from cz_assets import TAG_AC_JS
+        ensure_tag_sources(TAGAC_SOURCES)
+        files = list_tag_files()
+        urls = ["/gradio_api/file=" + os.path.abspath(p).replace("\\", "/") for p in files]
+        local = [f"__{w}__" for w in list_wildcards()]
+        if not urls and not local:
+            _log("no tag source available; autocomplete inactive", mod="tagac")
+            return None
+        js = (TAG_AC_JS.replace("__SRC__", json.dumps(urls))
+              .replace("__LOCAL__", json.dumps(local))
+              .replace("__MAX__", str(TAGAC_MAX)))
+        _log(f"{len(urls)} CSV source(s) + {len(local)} local asset(s)", mod="tagac")
+        return "<script>" + js + "</script>"
+    except Exception as e:
+        _log(f"init failed ({e}); autocomplete disabled", mod="tagac")
+        return None
+
+
 # JS injecte au chargement: force le theme sombre, preview de style au survol,
 # et lightbox plein ecran au clic sur le rendu. __MAP__ = {nom_style: url_vignette}.
 def build_ui():
@@ -1851,7 +1888,8 @@ def build_ui():
     # Omni (multi-reference) propose seulement si un modele Omni/Edit est configure.
     omni_on = bool((cz_pipeline.OMNI_MODEL or "").strip())
 
-    with gr.Blocks(title=f"crispz-studio {APP_VERSION}", theme=gr.themes.Default(), css=FOOOCUS_CSS, js=js_full) as demo:
+    with gr.Blocks(title=f"crispz-studio {APP_VERSION}", theme=gr.themes.Default(), css=FOOOCUS_CSS,
+                   js=js_full, head=_tagac_head()) as demo:
         # La galerie du dossier de sortie s'ouvre dans un nouvel onglet (Asset Browser),
         # via le bouton sous l'apercu. Pas de panneau galerie inline.
         gallery_url = gr.Textbox(visible=False)

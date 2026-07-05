@@ -451,6 +451,7 @@ def cli_main(argv=None):
     if not args.cli and not args.input and not args.input_folder:
         _disable_brotli()  # evite le bug h11 'Content-Length' a l'envoi des resultats
         build_ui().launch(allowed_paths=[os.path.join(HERE, "styles", "samples"),
+                                         os.path.join(HERE, "tags"),
                                          _ab_resolve_dir(DEFAULT_OUTPUT_DIR)])
         return 0
 

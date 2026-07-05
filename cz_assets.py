@@ -220,3 +220,196 @@ FOOOCUS_CSS = """
 .cz-lightbox .cz-close { position: fixed; top: 14px; right: 26px; color: #fff;
   font-size: 44px; line-height: 1; cursor: pointer; font-weight: 300; }
 """
+
+
+# JS autonome du tag-autocomplete (injecte via gr.Blocks(head=...) UNIQUEMENT si la
+# feature est activee -> zero JS/fetch quand off). Placeholders remplaces au build:
+# __SRC__ (URLs des CSV), __LOCAL__ (assets locaux, ex. __wildcards__), __MAX__.
+# Index: tri global par popularite une fois, dedoublonnage entre sources, buckets par
+# prefixe de 2 caracteres, sortie anticipee a MAX resultats.
+TAG_AC_JS = r"""
+(() => {
+  const SRC = __SRC__, LOCAL = __LOCAL__, MAXR = __MAX__;
+  const SEL = '#cz_prompt textarea, #cz_neg textarea';
+  let E = [], BUCKET = new Map(), READY = false;
+  let box = null, mirror = null, items = [], sel = -1, curTA = null, tok = null;
+  let nq = 0, tq = 0;
+
+  function parseText(text) {
+    const out = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      if (line.indexOf(',') < 0) { out.push({t: line, n: 0, a: []}); continue; }
+      const m = line.match(/^([^,]+),([^,]*),?([^,"]*),?"?(.*?)"?\s*$/);
+      if (!m || !m[1].trim()) continue;
+      const a = (m[4] || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      out.push({t: m[1].trim(), n: parseInt(m[3], 10) || 0, a: a});
+    }
+    return out;
+  }
+
+  function buildIndex(lists) {
+    const t0 = performance.now();
+    const best = new Map();
+    for (const w of LOCAL) best.set(w.toLowerCase(), {t: w, n: 1e12, a: []});
+    for (const list of lists) for (const e of list) {
+      const k = e.t.toLowerCase(), p = best.get(k);
+      if (!p) best.set(k, e);
+      else { if (e.n > p.n) p.n = e.n; if (e.a.length && !p.a.length) p.a = e.a; }
+    }
+    E = [...best.values()].sort((x, y) => y.n - x.n);
+    BUCKET = new Map();
+    E.forEach((e, i) => {
+      const keys = new Set([e.t.toLowerCase().slice(0, 2)]);
+      for (const al of e.a) keys.add(al.slice(0, 2));
+      for (const k of keys) { let b = BUCKET.get(k); if (!b) BUCKET.set(k, b = []); b.push(i); }
+    });
+    READY = true;
+    console.log('[tagac] ready in ' + (performance.now() - t0).toFixed(0) + ' ms - '
+                + E.length + ' entries, ' + SRC.length + ' source file(s)');
+  }
+
+  function query(q) {
+    const t0 = performance.now();
+    q = q.toLowerCase();
+    const out = [], b = BUCKET.get(q.slice(0, 2)) || [];
+    for (const i of b) {
+      const e = E[i];
+      if (e.t.toLowerCase().startsWith(q)) out.push({e: e, via: null});
+      else { const al = e.a.find(x => x.startsWith(q)); if (al) out.push({e: e, via: al}); }
+      if (out.length >= MAXR) break;
+    }
+    tq += performance.now() - t0; nq += 1;
+    if (nq % 50 === 0)
+      console.debug('[tagac] avg query ' + (tq / nq).toFixed(3) + ' ms over ' + nq + ' keystrokes');
+    return out;
+  }
+
+  function tokenAt(v, caret) {
+    let s = caret;
+    while (s > 0 && v[s - 1] !== ',' && v[s - 1] !== '\n') s -= 1;
+    while (s < caret && (v[s] === ' ' || v[s] === '\t')) s += 1;
+    return {start: s, text: v.slice(s, caret)};
+  }
+
+  function ensureUI() {
+    if (box) return;
+    const st = document.createElement('style');
+    st.textContent = '.czac{position:fixed;z-index:10001;background:#141b2e;border:1px solid #3c4864;'
+      + 'border-radius:8px;font-size:13px;color:#dfe6f2;box-shadow:0 8px 24px rgba(0,0,0,.5);'
+      + 'max-width:420px;overflow:hidden}'
+      + '.czac div{padding:5px 10px;cursor:pointer;display:flex;gap:10px;justify-content:space-between}'
+      + '.czac div.on{background:#2b3a5c}';
+    document.head.appendChild(st);
+    box = document.createElement('div');
+    box.className = 'czac';
+    box.style.display = 'none';
+    document.body.appendChild(box);
+    mirror = document.createElement('div');
+    mirror.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:0;'
+      + 'white-space:pre-wrap;word-wrap:break-word;overflow:hidden;';
+    document.body.appendChild(mirror);
+  }
+
+  function caretXY(ta) {
+    ensureUI();
+    const cs = getComputedStyle(ta);
+    const props = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
+                   'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+                   'borderTopWidth', 'borderLeftWidth', 'boxSizing'];
+    for (const p of props) mirror.style[p] = cs[p];
+    mirror.style.width = ta.clientWidth + 'px';
+    mirror.textContent = ta.value.slice(0, ta.selectionStart);
+    const mk = document.createElement('span');
+    mk.textContent = '​';
+    mirror.appendChild(mk);
+    const r = ta.getBoundingClientRect();
+    let lh = parseFloat(cs.lineHeight);
+    if (!lh || isNaN(lh)) lh = parseFloat(cs.fontSize) * 1.3;
+    return {x: Math.min(r.left + mk.offsetLeft - ta.scrollLeft, window.innerWidth - 430),
+            y: r.top + mk.offsetTop - ta.scrollTop + lh};
+  }
+
+  function fmt(n) {
+    if (n >= 1e12) return '';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + 'k';
+    return n > 0 ? String(n) : '';
+  }
+
+  function render(res, xy) {
+    ensureUI();
+    box.textContent = '';
+    items = res; sel = 0;
+    res.forEach((r, i) => {
+      const d = document.createElement('div');
+      const l = document.createElement('span');
+      l.textContent = r.via ? r.e.t + '  (' + r.via + ')' : r.e.t;
+      const c = document.createElement('span');
+      c.textContent = fmt(r.e.n);
+      c.style.opacity = '.55';
+      d.appendChild(l); d.appendChild(c);
+      if (i === 0) d.classList.add('on');
+      d.addEventListener('mousedown', ev => { ev.preventDefault(); sel = i; pick(); });
+      box.appendChild(d);
+    });
+    box.style.left = xy.x + 'px';
+    box.style.top = xy.y + 'px';
+    box.style.display = 'block';
+  }
+
+  function move(d) {
+    if (!items.length) return;
+    sel = (sel + d + items.length) % items.length;
+    Array.prototype.forEach.call(box.children, (c, i) => c.classList.toggle('on', i === sel));
+  }
+
+  function close() { if (box) box.style.display = 'none'; items = []; sel = -1; }
+
+  function pick() {
+    if (sel < 0 || !items[sel] || !curTA) return;
+    const e = items[sel].e, ta = curTA, v = ta.value, caret = ta.selectionStart;
+    const text = e.t.indexOf('__') === 0 ? e.t : e.t.replace(/_/g, ' ');
+    const before = v.slice(0, tok.start), after = v.slice(caret);
+    const sep = after.trim() === '' ? ', ' : (/^\s*,/.test(after) ? '' : ', ');
+    ta.value = before + text + sep + after;
+    const pos = (before + text + sep).length;
+    ta.setSelectionRange(pos, pos);
+    ta.dispatchEvent(new Event('input', {bubbles: true}));
+    close();
+  }
+
+  function onInput(ta) {
+    if (!READY) return;
+    curTA = ta;
+    tok = tokenAt(ta.value, ta.selectionStart);
+    if (tok.text.trim().length < 2) { close(); return; }
+    const res = query(tok.text.trim());
+    if (!res.length) { close(); return; }
+    render(res, caretXY(ta));
+  }
+
+  document.addEventListener('input', ev => {
+    const ta = ev.target;
+    if (ta && ta.matches && ta.matches(SEL)) onInput(ta);
+  }, true);
+  document.addEventListener('keydown', ev => {
+    if (!box || box.style.display === 'none') return;
+    const ta = ev.target;
+    if (!ta || !ta.matches || !ta.matches(SEL)) return;
+    if (ev.key === 'ArrowDown') move(1);
+    else if (ev.key === 'ArrowUp') move(-1);
+    else if (ev.key === 'Tab' || ev.key === 'Enter') pick();
+    else if (ev.key === 'Escape') close();
+    else return;
+    ev.preventDefault(); ev.stopPropagation();
+  }, true);
+  document.addEventListener('click', ev => { if (box && !box.contains(ev.target)) close(); }, true);
+  window.addEventListener('resize', close);
+
+  Promise.all(SRC.map(u => fetch(u).then(r => r.ok ? r.text() : '').catch(() => '')))
+    .then(txts => buildIndex(txts.map(parseText)))
+    .catch(e => console.warn('[tagac] init failed:', e));
+})();
+"""

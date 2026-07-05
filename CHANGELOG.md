@@ -3,6 +3,30 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.4.0 — 2026-07-05 — Tag autocomplete in prompt fields
+
+Type-ahead suggestions in the **prompt** and **negative prompt** fields.
+
+- **Sources**: CSVs listed in `tag_autocomplete.sources` are downloaded **once at first
+  launch** into `tags/` (atomic tmp+rename, one-line console progress); any `.csv` you
+  drop into `tags/` becomes a source too (rich `name,category,count,"aliases"` format or
+  one word per line). Local assets are merged in: your **wildcards** appear as
+  `__name__` entries at top priority.
+- **Client**: vanilla JS injected only when enabled (`gr.Blocks(head=…)`). Index built
+  once — global popularity sort, cross-source dedup, **2-char prefix buckets, early
+  exit** — then a dropdown under the caret: ↑/↓ navigate, **Tab/Enter** insert (current
+  comma-delimited token replaced, underscores → spaces, `__wildcards__` kept verbatim),
+  **Escape** closes. Aliases match too (shown in gray with the matched alias). Startup
+  and per-keystroke timings logged in the browser console (`[tagac] ready in N ms`,
+  rolling average per 50 keystrokes).
+- **Zero-cost off**: `"tag_autocomplete": {"enabled": false}` → `cz_tags` never imported,
+  nothing downloaded, no script injected.
+- New generic helper `cz_core.download_with_progress` (atomic, 64 KB blocks, one-line
+  progress) — also used by the inswapper/GFPGAN downloads from this version on.
+- Files: `cz_tags.py` (new), `cz_assets.py` (`TAG_AC_JS`), `cz_ui.py`, `cz_core.py`,
+  `cz_cli.py` (`tags/` served), `config-sample.txt`, `.gitignore` (`tags/`),
+  `tests/test_tagac.py`.
+
 ## 1.3.0 — 2026-07-05 — Contextual suggestions for X/Y/Z value fields
 
 - Each value field adapts to the axis picked in the neighboring dropdown: the
