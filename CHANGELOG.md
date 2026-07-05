@@ -3,6 +3,16 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.5.1 — 2026-07-05 — Fix: tensor-size mismatch on non-/32 image dimensions
+
+- Fixes `Upscale/img2img failed: The size of tensor a (150) must match the size of
+  tensor b (148)` — hit e.g. with **Force aspect ratio** crops whose height/width is a
+  multiple of 16 but not 32 (1200, 848…). The Z-Image transformer patchifies the VAE
+  latent by 2, so **every pixel dimension must be a multiple of 32**.
+- `round_to_multiple` default is now **32** (txt2img sizes, refine tiles, ESRGAN targets
+  all align), and `_refine_whole` snaps its input to /32 (resize) before diffusion then
+  restores the original size — callers and tiled overlap-add contracts unchanged.
+
 ## 1.5.0 — 2026-07-05 — X/Y/Z grid in the CLI
 
 The comparison grid is no longer UI-only: `--xyz "AXIS=v1,v2,…"` (repeat up to 3 times

@@ -762,7 +762,10 @@ def generate(prompt, width, height, steps, seed, negative_prompt=""):
     return img
 
 
-def round_to_multiple(x, m=16):
+def round_to_multiple(x, m=32):
+    """Alignement des dimensions. Defaut 32: le transformer Z-Image patchifie par 2 le
+    latent VAE -> toute dimension pixel doit etre multiple de 32, sinon mismatch de
+    tenseurs dans la diffusion (ex. 'size of tensor a (150) must match b (148)')."""
     return max(m, int(round(x / m) * m))
 
 
@@ -1030,13 +1033,17 @@ def _make_generator(seed):
 def _refine_whole(pipe, image, denoise, steps, prompt, seed):
     """Passe Z-Image img2img sur l'image entiere (ou une tuile). Le slicing est pose
     selon la taille reelle traitee: tuile 1024 -> OFF (rapide), whole 2K+ -> ON.
-    On passe width/height = taille de l'entree (alignee /16) pour garantir la preservation
-    du ratio (par coherence avec les forks Flux/Qwen; ZImageImg2ImgPipeline derive deja la
-    taille de l'image d'entree, donc c'est sans effet ici mais protege des regressions)."""
+    L'entree est ALIGNEE /32 (resize) avant diffusion — le transformer patchifie le
+    latent par 2, une dimension non /32 provoque un mismatch de tenseurs (150 vs 148) —
+    puis le resultat est ramene a la taille d'origine (contrat des appelants preserve)."""
     _set_slicing(pipe, max(image.size))
-    w = round_to_multiple(image.width, 16)
-    h = round_to_multiple(image.height, 16)
-    return pipe(
+    orig_size = image.size
+    w = round_to_multiple(image.width, 32)
+    h = round_to_multiple(image.height, 32)
+    if (w, h) != image.size:
+        _dbg(f"refine: input {image.size[0]}x{image.size[1]} not /32 -> resized {w}x{h}")
+        image = image.resize((w, h), Image.LANCZOS)
+    out = pipe(
         prompt=prompt or "",
         image=image,
         width=w, height=h,
@@ -1045,6 +1052,9 @@ def _refine_whole(pipe, image, denoise, steps, prompt, seed):
         guidance_scale=GUIDANCE,
         generator=_make_generator(seed),
     ).images[0]
+    if out.size != orig_size:
+        out = out.resize(orig_size, Image.LANCZOS)
+    return out
 
 
 def _feather_mask_np(th, tw, overlap, left, right, top, bottom):
