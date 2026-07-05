@@ -68,6 +68,7 @@ Tabbed Gradio UI + scriptable CLI + persistent server (`--serve`).
 | Script | What it does |
 |---|---|
 | `run.bat` | Standard local launch (127.0.0.1:7860). |
+| `xyz_example.bat` | Ready-to-run **X/Y/Z grid** CLI example (`xyz_example.bat "your prompt"`) — 2×2 Steps × Guidance, prints the sheet path. Unix: `xyz_example.sh`. |
 | `boot_check_rtx5090.bat` | GPU / venv / torch / models diagnostic, then launch. |
 | `run_quality_rtx5090.bat` | Local launch + RTX-5090 CUDA env. |
 | `run_quality_rtx5090_lan.bat` | **LAN**: listens on `0.0.0.0`, prints your LAN URL. |

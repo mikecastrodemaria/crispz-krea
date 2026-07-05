@@ -22,8 +22,12 @@ python app.py --cli --txt2img --prompt "a red cat" \
 - Each combo is saved as a normal output (tag `xyz`, metadata includes the combo);
   **Ctrl+C assembles a partial sheet** with the cells rendered so far.
 - Respects `xyz_grid.enabled` (config) — disabled = clear error, nothing runs.
+- Ready-to-run example scripts: `xyz_example.bat` / `xyz_example.sh`
+  (`xyz_example.bat "your prompt"` → 2×2 Steps × Guidance grid; edit the `--xyz` lines
+  to change the axes). Fails loudly with a non-zero exit code on error.
 - Files: `cz_cli.py` (`--xyz`, runner), `cz_ui.py` (axes table gains abstract `param`
-  names shared with the CLI), `tests/test_xyz.py` (CLI apply + axis resolution).
+  names shared with the CLI), `xyz_example.bat`/`.sh`, `tests/test_xyz.py`
+  (CLI apply + axis resolution).
 
 ## 1.4.0 — 2026-07-05 — Tag autocomplete in prompt fields
 

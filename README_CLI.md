@@ -40,6 +40,10 @@ python app.py --txt2img --prompt "..." --upscale --refine-first \
 Every combo is generated, saved as a normal output, and the run ends with annotated
 contact sheet(s) in `<output>/xyz_<timestamp>/` (one per Z value; paths printed).
 
+> Ready-to-run example: **`xyz_example.bat "your prompt"`** (Windows) or
+> **`./xyz_example.sh "your prompt"`** (Unix) — a 2×2 Steps × Guidance grid; edit the
+> `--xyz` lines inside to change the axes.
+
 ```bash
 # 3×2 grid: Steps × Guidance
 python app.py --txt2img --prompt "a red cat" \
