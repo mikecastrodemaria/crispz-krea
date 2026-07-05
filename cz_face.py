@@ -15,7 +15,7 @@ import os
 import numpy as np
 from PIL import Image
 
-from cz_core import CONFIG, HERE, DEVICE, _log, _prefs
+from cz_core import CONFIG, HERE, DEVICE, _log, _prefs, download_with_progress
 
 # FaceSwap: restauration GFPGAN post-swap (nettete du visage). Reglable via l'UI.
 FACESWAP_RESTORE = bool(CONFIG.get("faceswap_restore", False))
@@ -113,12 +113,11 @@ def _resolve_faceswap_model(checkpoints_dir=None):
     # Telechargement optionnel (URL fournie par l'utilisateur dans config.txt).
     url = (CONFIG.get("faceswap_model_url") or "").strip()
     if url:
-        import urllib.request
         dst_dir = os.path.join(HERE, "faceswap")
         os.makedirs(dst_dir, exist_ok=True)
         dst = os.path.join(dst_dir, "inswapper_128.onnx")
         _log(f"downloading inswapper model from {url} ...")
-        urllib.request.urlretrieve(url, dst)
+        download_with_progress(url, dst, timeout=120)   # atomique + progression
         return dst
     return None
 
@@ -184,12 +183,11 @@ def _resolve_face_restore_model():
             return p
     url = (CONFIG.get("faceswap_restore_url") or "").strip()
     if url:
-        import urllib.request
         dst_dir = os.path.join(HERE, "faceswap")
         os.makedirs(dst_dir, exist_ok=True)
         dst = os.path.join(dst_dir, "gfpgan_1.4.onnx")
         _log(f"downloading GFPGAN restore model from {url} ...")
-        urllib.request.urlretrieve(url, dst)
+        download_with_progress(url, dst, timeout=120)   # atomique + progression
         return dst
     return None
 
