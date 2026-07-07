@@ -563,9 +563,11 @@ def _apply_transformer_repo(repo):
     """Definit le transformer depuis un repo HF / dossier diffusers OU un .safetensors.
     Ajuste steps/guidance ET le preset Performance selon le profil du modele."""
     repo = (repo or "").strip()
-    set_zimage_transformer(repo)
     if not repo:
-        return "Transformer: from base repo.", gr.update(), gr.update(), gr.update()
+        return ("Transformer override is empty — no change. Pick a model in 'Z-Image "
+                "checkpoint' above (that also clears any override).",
+                gr.update(), gr.update(), gr.update())
+    set_zimage_transformer(repo)
     st, g = profile_for_model(repo)
     return (f"Transformer override: {repo} -> auto steps={st}, CFG={g} "
             f"(keeps base VAE/encoder; reload on next run).",
@@ -1698,7 +1700,7 @@ def build_ui():
                                 info="Loads only the transformer, keeps the base VAE/encoders "
                                      "(base = FLUX.1-Krea-dev). For diffusers-format weights only "
                                      "(ComfyUI FP8 single-files are not supported).")
-                            transformer_apply_btn = gr.Button("Apply", size="sm", scale=1, variant="primary")
+                            transformer_apply_btn = gr.Button("Apply override", size="sm", scale=1, variant="secondary")
 
                         gr.Markdown("### LoRA (up to 3, combinable)")
                         lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
