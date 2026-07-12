@@ -2356,87 +2356,87 @@ def build_ui():
                                 "- **sequential** — aggressive, module-by-module. Runs in ~9GB but much slower "
                                 "(5–10×). For small cards (8–12GB).")
 
-                        gr.Markdown("### Checkpoints (switch model, like ESRGAN)")
-                        ckpt_dir_tb = gr.Textbox(value=cz_pipeline.CHECKPOINTS_DIR, label="Checkpoints folder")
-                        ckpt_extra_dir_tb = gr.Textbox(
-                            value=cz_pipeline.CHECKPOINTS_EXTRA_DIR,
-                            label="Extra checkpoints folder (optional)",
-                            placeholder="e.g. D:\\models\\Z-Image",
-                            info="Merged into the single 'Z-Image checkpoint' list above. Leave empty to disable.")
-                        esrgan_dir_tb = gr.Textbox(value=cz_esrgan.ESRGAN_DIR,
-                                                   label="ESRGAN_DIR (.pth/.safetensors folder)")
-                        with gr.Row():
-                            refresh_btn = gr.Button("Refresh ESRGAN", size="sm")
-                            save_paths_btn = gr.Button("Save paths", size="sm")
-                        paths_status = gr.Markdown("")
-                        with gr.Row():
-                            _ckpt_choices = ZIMAGE_BASE_REPOS + list_checkpoints()
-                            _ckpt_value = cz_pipeline.BASE_REPO if cz_pipeline.BASE_REPO in _ckpt_choices else ZIMAGE_BASE_REPOS[0]
-                            ckpt_dd = gr.Dropdown(choices=_ckpt_choices,
-                                                  value=_ckpt_value, label="Z-Image checkpoint", scale=3)
-                            ckpt_refresh_btn = gr.Button("Refresh", size="sm", scale=1)
-                        ckpt_status = gr.Markdown("")
-                        with gr.Row():
-                            transformer_tb = gr.Textbox(
-                                value="", scale=3,
-                                label="Transformer override (HF repo / diffusers folder)",
-                                placeholder="e.g. RunDiffusion/Juggernaut-Z-Image",
-                                info="For community models with an incomplete tokenizer (Juggernaut-Z): "
-                                     "loads only the transformer, keeps base VAE/encoder. Set base = Turbo.")
-                            transformer_apply_btn = gr.Button("Apply override", size="sm", scale=1,
-                                                              variant="secondary")
-
-                        gr.Markdown(f"### LoRA (up to {LORA_SLOTS}, combinable)")
-                        lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
-                        _lchoices = ["None"] + list_loras()
-                        lora_dds, lora_lws = [], []
-                        for _i in range(LORA_SLOTS):
+                        with gr.Accordion("\U0001F4E6 Checkpoints (switch model)", open=True):
+                            ckpt_dir_tb = gr.Textbox(value=cz_pipeline.CHECKPOINTS_DIR, label="Checkpoints folder")
+                            ckpt_extra_dir_tb = gr.Textbox(
+                                value=cz_pipeline.CHECKPOINTS_EXTRA_DIR,
+                                label="Extra checkpoints folder (optional)",
+                                placeholder="e.g. D:\\models\\Z-Image",
+                                info="Merged into the single 'Z-Image checkpoint' list above. Leave empty to disable.")
+                            esrgan_dir_tb = gr.Textbox(value=cz_esrgan.ESRGAN_DIR,
+                                                       label="ESRGAN_DIR (.pth/.safetensors folder)")
                             with gr.Row():
-                                _dd = gr.Dropdown(choices=_lchoices, value="None",
-                                                  label=f"LoRA {_i + 1}", scale=3)
-                                _lw = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT),
-                                                step=0.05, label=f"Weight {_i + 1}", scale=2)
-                            lora_dds.append(_dd)
-                            lora_lws.append(_lw)
-                        lora_refresh_btn = gr.Button("Refresh LoRA list", size="sm")
-                        lora_keywords_tb = gr.Textbox(label="Keywords / trigger words", lines=2,
-                                                      placeholder="Auto-filled from the selected LoRA(s).")
-                        with gr.Row():
-                            lora_kw_btn = gr.Button("Get keywords", size="sm")
-                            lora_kw_to_prompt_btn = gr.Button("Add to prompt", size="sm", variant="primary")
-                        lora_status = gr.Markdown("")
+                                refresh_btn = gr.Button("Refresh ESRGAN", size="sm")
+                                save_paths_btn = gr.Button("Save paths", size="sm")
+                            paths_status = gr.Markdown("")
+                            with gr.Row():
+                                _ckpt_choices = ZIMAGE_BASE_REPOS + list_checkpoints()
+                                _ckpt_value = cz_pipeline.BASE_REPO if cz_pipeline.BASE_REPO in _ckpt_choices else ZIMAGE_BASE_REPOS[0]
+                                ckpt_dd = gr.Dropdown(choices=_ckpt_choices,
+                                                      value=_ckpt_value, label="Z-Image checkpoint", scale=3)
+                                ckpt_refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+                            ckpt_status = gr.Markdown("")
+                            with gr.Row():
+                                transformer_tb = gr.Textbox(
+                                    value="", scale=3,
+                                    label="Transformer override (HF repo / diffusers folder)",
+                                    placeholder="e.g. RunDiffusion/Juggernaut-Z-Image",
+                                    info="For community models with an incomplete tokenizer (Juggernaut-Z): "
+                                         "loads only the transformer, keeps base VAE/encoder. Set base = Turbo.")
+                                transformer_apply_btn = gr.Button("Apply override", size="sm", scale=1,
+                                                                  variant="secondary")
 
-                        gr.Markdown("### \U0001F3B2 Wildcards")
-                        gr.Markdown("*`__name__` in the prompt -> a random line from name.txt "
-                                    "(nested, reproducible per seed). Pick a file to view/edit it, "
-                                    "Insert to add it to the prompt, or Create a new one.*")
-                        wild_dir_tb = gr.Textbox(value=cz_prompt.WILDCARDS_DIR, label="Wildcards folder")
-                        with gr.Row():
-                            wild_dd = gr.Dropdown(["None"] + list_wildcards(), value="None",
-                                                  label="Wildcard file", scale=3)
-                            wild_refresh_btn = gr.Button("Refresh", size="sm", scale=1, min_width=90)
-                            wild_insert_btn = gr.Button("Insert __name__", size="sm", scale=1,
-                                                        variant="primary", min_width=140)
-                        wild_editor = gr.Textbox(label="Contents (one option per line)", lines=8,
-                                                 placeholder="Select a file above to view/edit, "
-                                                             "or type lines for a new one.")
-                        with gr.Row():
-                            wild_save_btn = gr.Button("Save", size="sm")
-                            wild_new_name = gr.Textbox(show_label=False, scale=2, container=False,
-                                                       placeholder="new_wildcard_name (no extension)")
-                            wild_create_btn = gr.Button("Create new", size="sm", variant="primary")
-                        wild_status = gr.Markdown("")
+                        with gr.Accordion(f"\U0001F9E9 LoRA (up to {LORA_SLOTS}, combinable)", open=False):
+                            lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
+                            _lchoices = ["None"] + list_loras()
+                            lora_dds, lora_lws = [], []
+                            for _i in range(LORA_SLOTS):
+                                with gr.Row():
+                                    _dd = gr.Dropdown(choices=_lchoices, value="None",
+                                                      label=f"LoRA {_i + 1}", scale=3)
+                                    _lw = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT),
+                                                    step=0.05, label=f"Weight {_i + 1}", scale=2)
+                                lora_dds.append(_dd)
+                                lora_lws.append(_lw)
+                            lora_refresh_btn = gr.Button("Refresh LoRA list", size="sm")
+                            lora_keywords_tb = gr.Textbox(label="Keywords / trigger words", lines=2,
+                                                          placeholder="Auto-filled from the selected LoRA(s).")
+                            with gr.Row():
+                                lora_kw_btn = gr.Button("Get keywords", size="sm")
+                                lora_kw_to_prompt_btn = gr.Button("Add to prompt", size="sm", variant="primary")
+                            lora_status = gr.Markdown("")
 
-                        gr.Markdown("### Omni / Edit model (multi-reference)")
-                        gr.Markdown("*The Reference (Omni) tab stays hidden until a model is set "
-                                    "here (then restart). Z-Image-Omni-Base / Z-Image-Edit are not "
-                                    "released yet. For a reference image now, use img2img.*")
-                        omni_model_tb = gr.Textbox(value=CONFIG.get("zimage_omni_model", ""),
-                                                   label="Omni model (HF repo or local folder)",
-                                                   info="Needs SigLIP. Set it then restart to enable "
-                                                        "the Reference (Omni) tab.")
-                        omni_check_btn = gr.Button("Check Omni availability (Hugging Face)", size="sm")
-                        omni_status = gr.Markdown("")
+                        with gr.Accordion("\U0001F3B2 Wildcards", open=False):
+                            gr.Markdown("*`__name__` in the prompt -> a random line from name.txt "
+                                        "(nested, reproducible per seed). Pick a file to view/edit it, "
+                                        "Insert to add it to the prompt, or Create a new one.*")
+                            wild_dir_tb = gr.Textbox(value=cz_prompt.WILDCARDS_DIR, label="Wildcards folder")
+                            with gr.Row():
+                                wild_dd = gr.Dropdown(["None"] + list_wildcards(), value="None",
+                                                      label="Wildcard file", scale=3)
+                                wild_refresh_btn = gr.Button("Refresh", size="sm", scale=1, min_width=90)
+                                wild_insert_btn = gr.Button("Insert __name__", size="sm", scale=1,
+                                                            variant="primary", min_width=140)
+                            wild_editor = gr.Textbox(label="Contents (one option per line)", lines=8,
+                                                     placeholder="Select a file above to view/edit, "
+                                                                 "or type lines for a new one.")
+                            with gr.Row():
+                                wild_save_btn = gr.Button("Save", size="sm")
+                                wild_new_name = gr.Textbox(show_label=False, scale=2, container=False,
+                                                           placeholder="new_wildcard_name (no extension)")
+                                wild_create_btn = gr.Button("Create new", size="sm", variant="primary")
+                            wild_status = gr.Markdown("")
+
+                        with gr.Accordion("\U0001F5BC️ Omni / Edit (multi-reference)", open=False):
+                            gr.Markdown("*The Reference (Omni) tab stays hidden until a model is set "
+                                        "here (then restart). Z-Image-Omni-Base / Z-Image-Edit are not "
+                                        "released yet. For a reference image now, use img2img.*")
+                            omni_model_tb = gr.Textbox(value=CONFIG.get("zimage_omni_model", ""),
+                                                       label="Omni model (HF repo or local folder)",
+                                                       info="Needs SigLIP. Set it then restart to enable "
+                                                            "the Reference (Omni) tab.")
+                            omni_check_btn = gr.Button("Check Omni availability (Hugging Face)", size="sm")
+                            omni_status = gr.Markdown("")
 
                     with gr.Tab("Save"):
                         save_mode = gr.Radio(choices=["display", "local", "alongside", "custom"],
