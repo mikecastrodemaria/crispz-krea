@@ -89,6 +89,8 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
         elif gen_thumbs:
             if background_thumbs:
                 jobs.append((p, tp))
+                thumb_rel = trel   # vignette a venir -> la SPA montre un placeholder puis
+                                   # charge la vraie vignette (pas l'image complete, lourde)
             else:
                 try:
                     os.makedirs(os.path.dirname(tp), exist_ok=True)
