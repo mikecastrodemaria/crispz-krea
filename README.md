@@ -2,7 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
-> Current version: **1.5.2** — see [CHANGELOG.md](CHANGELOG.md).
+> Current version: **1.7.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 ![crispz-studio — Z-Image creation + enhancement studio](assets/screenshot.png)
 
@@ -39,8 +39,19 @@ SwarmUI. On top of crispz's upscaler it adds:
 - **Models**: one **Z-Image checkpoint** dropdown merging the official base repos
   (Turbo / Z-Image) with single-file `.safetensors` from a main **and** an optional
   extra folder, a **Transformer override** (diffusers repo/folder, e.g. Juggernaut-Z),
-  and **multi-LoRA** (3 slots + trigger words). Picking a model also auto-syncs the
-  Performance preset. FP8 checkpoints are skipped (diffusers can't load them).
+  and **multi-LoRA** (configurable **1–10 slots** + trigger words). Picking a model also
+  auto-syncs the Performance preset. FP8 checkpoints are skipped (diffusers can't load them).
+- **Presets (Fooocus-style)** (Settings > ⭐ Presets): **save / load / update / delete**
+  presets — a preset bundles prompt, styles, size, steps/CFG, sampler, checkpoint,
+  transformer + LoRAs, and **Load** switches the model/LoRAs too. Stored in `presets/*.json`.
+- **Seed**: **♻️ Reuse last seed** (refills the real seed of the previous render) + **Fix
+  seed** (no +1 per image). A random `-1` seed is resolved to a concrete value so it is
+  actually saved in the metadata.
+- **Advanced tab** — **metadata scheme** (`crispz` / **a1111** for **Civitai** upload
+  compatibility), **read wildcards in order**, **also save pre-upscale image**, live
+  **LoRA-slot count**, and the **Hugging Face token** (gated models).
+- **PNG Info**: drop an image into *Input Image* to read its embedded **prompt + params**
+  (crispz, **A1111/Civitai**, or ComfyUI) and send them to the fields.
 - **Ollama (optional)**: **Describe** (image→prompt), **Improve prompt**, and **Vision
   Mix** (blend several reference images into one prompt). Models unload from VRAM after
   use. Without Ollama, **Describe** uses a local BLIP captioner and **Improve prompt**
@@ -48,10 +59,13 @@ SwarmUI. On top of crispz's upscaler it adds:
 - **Fooocus-style UI**: big contained preview + batch gallery (arrows + fullscreen),
   prompt + Generate + **Stop**, dark theme, Settings (aspect/performance/batch **1–30**),
   **277 styles** (search + hover previews), and a **crop editor** on every image input.
-- **Asset Browser** (output folder gallery): opens **instantly** in a new tab (indexing
-  runs in the background), **defaults to today's date**, shows **placeholder thumbnails**
-  while images load, with metadata (prompt/seed/params), search/day filter, copy, delete,
-  NSFW blur — plus a per-session history.
+- **Asset Browser** (standalone gallery, new tab): opens **instantly** (indexing +
+  thumbnails in the background, shimmer placeholder → real thumbnail); images save into
+  **`out/YYYY-MM-DD/`** date subfolders; a **subfolder sidebar** with counts + per-folder
+  **hide** + a **Hidden** toggle (persisted), **defaults to today**; **metadata keyword
+  search**, per-image copy/delete, NSFW blur; and **Outputs / LoRAs / Models** source tabs
+  (models show a Civitai preview if one sits next to the `.safetensors`, else a placeholder
+  + trigger words). Plus a per-session history in the app.
 - **Metadata saved** with every image: PNG text chunk + EXIF (jpg/webp) + `.json`
   sidecar — prompt, negative, seed, steps, guidance, size, model, LoRAs, **applied
   style names**, and the **sampler/schedule**. **Dated, unique filenames** (date +

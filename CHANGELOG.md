@@ -3,6 +3,47 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.7.0 — 2026-07-12 — Presets, seed reuse, Advanced tab, PNG Info, a1111 metadata, Asset Browser overhaul
+
+A large UI/UX pass (all in the `cz_*` modules).
+
+- **Presets (Fooocus-style)** — new *⭐ Presets* accordion (Settings). A preset bundles
+  prompt/negative, styles, size, steps/CFG, sampler/schedule, image number, checkpoint,
+  transformer override and LoRAs into `presets/<name>.json`. **Load** applies the widgets
+  AND the model/LoRAs (a chained silent checkpoint apply keeps the preset's steps/CFG);
+  **Save as new / Update selected / Delete / refresh**. `presets/` gitignored except
+  `example.json`.
+- **Seed management** — *♻️ Reuse last seed* button (refills the field with the previous
+  render's real seed) + *Fix seed (no +1 per image)* toggle. A `-1` random seed is now
+  resolved to a concrete value before generation, so the metadata stores the real seed
+  (previously it saved `-1`).
+- **Advanced tab** — new *Advanced* tab (after Save) for advanced settings; the *Hugging
+  Face access (gated models)* block moved here from Models.
+- **Input Image → PNG Info** — a "Read prompt / metadata from an image" reader (a filepath
+  uploader that preserves PNG chunks) parses crispz, **A1111/Civitai** (`parameters`) and
+  ComfyUI metadata, with *Send prompt* / *Send seed* to the fields.
+- **Metadata scheme** (`metadata_scheme`, Advanced > Metadata) — `crispz` (default) or
+  `a1111`, which also writes an A1111/Civitai `parameters` PNG chunk so **Civitai reads the
+  prompt/seed/params** on upload (crispz chunk + sidecar kept in both).
+- **Read wildcards in order** (`wildcards_in_order`, Advanced > Generation) — a batch sweeps
+  each wildcard file line by line (deterministic) instead of picking random lines.
+- **Also save pre-upscale image** (`save_pre_upscale`) — in txt2img + auto-upscale, also
+  save the base txt2img image (before ESRGAN/refine), tagged `txt2img`.
+- **Configurable LoRA slots** (`lora_slots`, default 3) — 1–10 slots; a live slider in
+  Advanced > Generation shows/hides them (persisted in `preferences.json`).
+- **Asset Browser overhaul** — the output gallery now opens as a **standalone page in a new
+  tab** via a button; **instant open** (manifest written immediately, thumbnails generated
+  in the background behind a shimmer placeholder that swaps to the real thumbnail); images
+  save into **`out/YYYY-MM-DD/`** date subfolders (`date_subfolders`, recursive scan);
+  **per-image delete**; a **subfolder sidebar** with counts, per-folder **hide** and a
+  **Hidden** toggle (persisted in localStorage), defaulting to the current day; **keyword
+  search** over the embedded metadata; and **Outputs / LoRAs / Models** source tabs
+  (LoRAs/Models show a Civitai preview if one sits next to the `.safetensors`, else a
+  placeholder + trigger words).
+- Files: `cz_ui.py`, `cz_assets.py`, `cz_assetbrowser.py`, `cz_imageio.py`, `cz_prompt.py`,
+  `cz_pipeline.py`, `cz_cli.py`, `cz_core.py` (`APP_VERSION` 1.7.0), `config-sample.txt`,
+  `config_modification_tutorial.txt`, `presets/example.json`.
+
 ## 1.6.0 — 2026-07-07 — Model-loading progress in the terminal and UI
 
 The first model load downloads from Hugging Face and then reads several GB into VRAM —
