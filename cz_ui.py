@@ -2240,19 +2240,6 @@ def build_ui():
                         log_level_status = gr.Markdown("")
 
                     with gr.Tab("Models"):
-                        gr.Markdown("### Hugging Face access (gated models)")
-                        with gr.Row():
-                            hf_token_tb = gr.Textbox(
-                                value="", type="password", scale=3, label="HF token",
-                                placeholder="hf_... (for gated models, e.g. FLUX.1-Krea-dev)",
-                                info="Saved to preferences.json (gitignored) and applied immediately. "
-                                     "Leave empty to keep the current token.")
-                            hf_token_save_btn = gr.Button("Save token", size="sm", scale=1, variant="primary")
-                        hf_token_status = gr.Markdown(
-                            "✅ A Hugging Face token is currently set."
-                            if hf_token_is_set() else
-                            "No HF token set (only needed for gated models).")
-
                         offload = gr.Dropdown(choices=list(cz_pipeline.OFFLOAD_CHOICES), value="none",
                                               label="CPU offload (VRAM)",
                                               info="How much of the model to move to CPU RAM to save VRAM. Details below.")
@@ -2380,6 +2367,20 @@ def build_ui():
                             ab_reindex_btn = gr.Button("Rebuild ALL thumbnails (force)", size="sm")
                         ab_open_link = gr.HTML("")
                         ab_status = gr.Markdown("")
+
+                    with gr.Tab("Advanced"):
+                        gr.Markdown("### Hugging Face access (gated models)")
+                        with gr.Row():
+                            hf_token_tb = gr.Textbox(
+                                value="", type="password", scale=3, label="HF token",
+                                placeholder="hf_... (for gated models, e.g. FLUX.1-Krea-dev)",
+                                info="Saved to preferences.json (gitignored) and applied immediately. "
+                                     "Leave empty to keep the current token.")
+                            hf_token_save_btn = gr.Button("Save token", size="sm", scale=1, variant="primary")
+                        hf_token_status = gr.Markdown(
+                            "✅ A Hugging Face token is currently set."
+                            if hf_token_is_set() else
+                            "No HF token set (only needed for gated models).")
 
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
