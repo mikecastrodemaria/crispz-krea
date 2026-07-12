@@ -1886,6 +1886,90 @@ def _tagac_head():
 
 # JS injecte au chargement: force le theme sombre, preview de style au survol,
 # et lightbox plein ecran au clic sur le rendu. __MAP__ = {nom_style: url_vignette}.
+def _parse_a1111_params(text):
+    """Parse le format A1111/Civitai (chunk PNG 'parameters'):
+        <prompt>\\nNegative prompt: <neg>\\nSteps: N, Sampler: ..., Seed: N, Size: WxH, Model: ...
+    Renvoie un dict {prompt, negative, seed, steps, guidance, sampler, size, model}."""
+    def _int(v):
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return None
+
+    def _float(v):
+        try:
+            return float(str(v).strip())
+        except Exception:
+            return None
+
+    out = {}
+    t = (text or "").replace("\r", "")
+    neg_i = t.find("Negative prompt:")
+    steps_i = t.find("\nSteps:")
+    if neg_i >= 0:
+        out["prompt"] = t[:neg_i].strip()
+        rest = t[neg_i + len("Negative prompt:"):]
+        s2 = rest.find("\nSteps:")
+        out["negative"] = (rest[:s2] if s2 >= 0 else rest).strip()
+        params = rest[s2:].strip() if s2 >= 0 else ""
+    else:
+        out["prompt"] = (t[:steps_i] if steps_i >= 0 else t).strip()
+        out["negative"] = ""
+        params = t[steps_i:].strip() if steps_i >= 0 else ""
+    for part in params.split(","):
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k, v = k.strip().lower(), v.strip()
+        if k == "seed":
+            out["seed"] = _int(v)
+        elif k == "steps":
+            out["steps"] = _int(v)
+        elif k in ("cfg scale", "guidance", "cfg"):
+            out["guidance"] = _float(v)
+        elif k == "sampler":
+            out["sampler"] = v
+        elif k == "size":
+            out["size"] = v
+        elif k == "model":
+            out["model"] = v
+    return out
+
+
+def _ui_read_meta(path):
+    """PNG Info: lit le prompt + les parametres embarques d'une image (crispz JSON,
+    A1111/Civitai 'parameters', ComfyUI, ou EXIF). Renvoie (markdown, dict parse)."""
+    empty = "*Upload an image to read its embedded prompt & parameters.*"
+    if not path or not os.path.isfile(path):
+        return empty, {}
+    meta = dict(_read_image_meta(path) or {})   # sidecar + chunk 'crispz' + EXIF
+    scheme = "crispz" if meta.get("prompt") else None
+    if not meta.get("prompt"):
+        try:
+            with Image.open(path) as im:
+                info = im.info or {}
+        except Exception:
+            info = {}
+        if info.get("parameters"):              # A1111 / Civitai
+            meta.update(_parse_a1111_params(info["parameters"]))
+            scheme = "a1111"
+        elif info.get("prompt"):                # ComfyUI (workflow json, brut)
+            meta["prompt"] = str(info.get("prompt"))[:2000]
+            scheme = "comfyui"
+    if not meta.get("prompt") and not meta.get("negative"):
+        return "*No embedded prompt/metadata found in this image.*", {}
+    lines = [f"*Detected scheme: **{scheme or 'unknown'}***"]
+    if meta.get("prompt"):
+        lines.append(f"**Prompt**\n\n{meta['prompt']}")
+    if meta.get("negative"):
+        lines.append(f"**Negative**\n\n{meta['negative']}")
+    kv = [f"{k}: {meta[k]}" for k in ("seed", "steps", "guidance", "sampler", "size", "model", "mode")
+          if meta.get(k) not in (None, "")]
+    if kv:
+        lines.append("**Params** — " + "  ·  ".join(kv))
+    return "\n\n".join(lines), meta
+
+
 def build_ui():
     models = list_esrgan_models()
     default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else (models[0] if models else None)
@@ -2027,6 +2111,20 @@ def build_ui():
                                                         label="Refine denoise (strength) - 0 = skip refine (ESRGAN only)")
                                     refine_steps = gr.Slider(4, 30, value=DEFAULT_STEPS, step=1,
                                                              label="Refine steps (runs at upscaled res -> higher = slower)")
+                            with gr.Accordion("\U0001F4C4 Read prompt / metadata from an image (PNG Info)",
+                                              open=False):
+                                gr.Markdown("*Drop a PNG/JPG to read its embedded prompt & parameters "
+                                            "(crispz, A1111/Civitai, or EXIF), then send them to the fields.*")
+                                meta_reader = gr.Image(type="filepath", sources=["upload", "clipboard"],
+                                                       height=150,
+                                                       label="Image to read")
+                                input_meta_md = gr.Markdown(
+                                    "*Upload an image above to read its prompt & parameters.*")
+                                meta_state = gr.State({})
+                                with gr.Row():
+                                    meta_to_prompt_btn = gr.Button("→ Send prompt", size="sm",
+                                                                   variant="primary")
+                                    meta_to_seed_btn = gr.Button("→ Send seed", size="sm")
                             with gr.Accordion("ESRGAN tiling (VRAM)", open=False):
                                 tile = gr.Slider(0, 1024, value=DEFAULT_TILE, step=8, label="Tile (0 = off)")
                                 overlap = gr.Slider(0, 128, value=DEFAULT_OVERLAP, step=8, label="Overlap")
@@ -2385,6 +2483,16 @@ def build_ui():
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
         use_input.change(lambda v: gr.update(visible=bool(v)), use_input, input_group)
+        # PNG Info: lire les meta d'une image + les envoyer aux champs
+        meta_reader.change(_ui_read_meta, [meta_reader], [input_meta_md, meta_state])
+        meta_to_prompt_btn.click(
+            lambda m: (gr.update(value=(m or {}).get("prompt", "")),
+                       gr.update(value=(m or {}).get("negative", ""))),
+            [meta_state], [prompt, negative])
+        meta_to_seed_btn.click(
+            lambda m: gr.update(value=int((m or {}).get("seed"))) if (m or {}).get("seed") is not None
+            else gr.update(),
+            [meta_state], [seed])
         aspect.change(_set_aspect, [aspect], [width, height]) \
               .then(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
         force_ratio_cb.change(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
