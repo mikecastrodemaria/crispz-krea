@@ -1263,12 +1263,16 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
             return _done([last_result], report, [_LAST_RUN_DST])
         # txt2img (batch image_number)
         n = max(1, int(image_number))
+        # Resout un seed -1 (random) en une valeur CONCRETE -> reproductible, memorisee
+        # (bouton "Reuse last seed") et ecrite correctement dans les metadonnees.
+        base_seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
+        cz_pipeline._LAST_SEED = base_seed
         images, img_paths, total_t = [], [], 0.0
         for i in range(n):
             if cz_pipeline._STOP:
                 _log(f"stop requested after {i}/{n} image(s)")
                 break
-            s = (int(seed) + i) if int(seed) >= 0 else -1
+            s = base_seed if cz_pipeline._NO_SEED_INCREMENT else base_seed + i
             progress(i / n, desc=f"Image {i + 1}/{n}")
             # Wildcards (__name__) + style aleatoire, par image (seed -> reproductible)
             chosen = _pick_styles(styles, style_random)
@@ -2193,6 +2197,12 @@ def build_ui():
                                                  step=1, label="Image number (batch)")
                         seed = gr.Number(value=int(CONFIG.get("default_seed", -1)),
                                          label="Seed (-1 = random)", precision=0)
+                        with gr.Row():
+                            reuse_seed_btn = gr.Button("♻️ Reuse last seed", size="sm",
+                                                       scale=1, min_width=140)
+                            no_seed_inc_cb = gr.Checkbox(
+                                value=False, scale=1, label="Fix seed (no +1 per image)",
+                                info="Batch reuses the same seed for every image (no increment).")
 
                     with gr.Tab("Styles"):
                         style_search = gr.Textbox(show_label=False, container=False,
@@ -2457,6 +2467,9 @@ def build_ui():
         # scheduler choisi aux pipes en cache (pas de rechargement).
         sampler_dd.change(set_sampler, [sampler_dd], None)
         schedule_dd.change(set_schedule, [schedule_dd], None)
+        # Seed (facon Fooocus): reutiliser le seed concret du dernier rendu + fixer le seed.
+        reuse_seed_btn.click(lambda: gr.update(value=int(cz_pipeline._LAST_SEED)), None, [seed])
+        no_seed_inc_cb.change(cz_pipeline.set_no_seed_increment, [no_seed_inc_cb], None)
         _gen_inputs = [prompt, negative, styles, style_random, use_input, inp, input_mode,
                        ref1, ref2, ref3, ref4,
                        faceswap_enable, faceswap_src,

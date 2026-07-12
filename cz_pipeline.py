@@ -119,6 +119,18 @@ _PROGRESS = None
 # les handlers via cz_pipeline._STOP = ... et par request_stop().
 _STOP = False
 
+# Gestion du seed (facon Fooocus):
+#  _LAST_SEED         = seed CONCRET du dernier rendu (un -1 aleatoire est resolu en
+#                       valeur reelle) -> bouton "Reuse last seed" + metadonnees justes.
+#  _NO_SEED_INCREMENT = True -> tout un batch utilise le meme seed (pas de +i par image).
+_LAST_SEED = -1
+_NO_SEED_INCREMENT = False
+
+
+def set_no_seed_increment(v):
+    global _NO_SEED_INCREMENT
+    _NO_SEED_INCREMENT = bool(v)
+
 
 def set_guidance(g):
     global GUIDANCE
