@@ -315,7 +315,7 @@ def _crop_input(label, height=280):
 # I/O image (noms, sauvegarde, metadonnees) -> cz_imageio.py (_gen_meta -> cz_pipeline).
 from cz_imageio import (  # noqa: E402,F401
     _now_stamp, _unique_path, _format_filename, build_output_path, _exif_bytes,
-    save_image, _list_output_files, _read_image_meta,
+    save_image, _list_output_files, _read_image_meta, set_metadata_scheme,
 )
 
 
@@ -2480,6 +2480,16 @@ def build_ui():
                             if hf_token_is_set() else
                             "No HF token set (only needed for gated models).")
 
+                        gr.Markdown("### Metadata")
+                        meta_scheme_dd = gr.Dropdown(
+                            choices=[("crispz (json)", "crispz"),
+                                     ("a1111 (plain text — Civitai-compatible)", "a1111")],
+                            value=(CONFIG.get("metadata_scheme") or "crispz").lower(),
+                            label="Metadata scheme (PNG output)",
+                            info="a1111 adds a 'parameters' chunk to PNGs so Civitai reads the "
+                                 "prompt/seed/params. crispz metadata (chunk + sidecar) is kept in both.")
+                        meta_scheme_status = gr.Markdown("")
+
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
         use_input.change(lambda v: gr.update(visible=bool(v)), use_input, input_group)
@@ -2501,6 +2511,7 @@ def build_ui():
 
         # Actions
         hf_token_save_btn.click(_save_hf_token, [hf_token_tb], [hf_token_tb, hf_token_status])
+        meta_scheme_dd.change(set_metadata_scheme, [meta_scheme_dd], [meta_scheme_status])
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         save_paths_btn.click(_save_paths_to_prefs,
                              [esrgan_dir_tb, ckpt_dir_tb, ckpt_extra_dir_tb, lora_dir_tb, wild_dir_tb],

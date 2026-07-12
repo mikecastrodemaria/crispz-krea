@@ -130,6 +130,10 @@ default_output_dir      Folder for "local"/"custom" save modes.
 default_output_format   "png" | "jpg" | "webp".
 date_subfolders         true (default) -> save into out/YYYY-MM-DD/ subfolders
                         (like Fooocus). The galleries/Asset Browser scan recursively.
+metadata_scheme         "crispz" (default) | "a1111". a1111 also writes an A1111/Civitai
+                        'parameters' text chunk into PNGs so Civitai reads the prompt +
+                        seed + params. crispz's own chunk + sidecar .json are kept either
+                        way. Switchable live in Advanced > Metadata.
 filename_pattern        Output filename (no extension). Placeholders:
                         {date}  YYYYMMDD-HHMMSS
                         {tag}   upscaled / txt2img / img2img / omni / faceswap (+ source name)
