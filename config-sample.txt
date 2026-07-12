@@ -85,6 +85,7 @@
     "filename_pattern": "{date}_{tag}_seed{seed}_{w}x{h}{index}",
     "date_subfolders": true,
     "metadata_scheme": "crispz",
+    "wildcards_in_order": false,
     "asset_browser": {
         "enabled": false,
         "generate_thumbnails": true,

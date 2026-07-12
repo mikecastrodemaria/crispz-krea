@@ -111,7 +111,7 @@ PERFORMANCE = {
 import cz_prompt
 from cz_prompt import (  # noqa: E402,F401
     STYLES, _seed_rng, list_wildcards, _apply_wildcards, _pick_styles, _apply_styles,
-    set_wildcards_dir,
+    set_wildcards_dir, set_wildcards_in_order,
 )
 
 # Real-ESRGAN (spandrel) + upscale tuile/overlap-add -> cz_esrgan.py. L'etat mutable
@@ -1202,7 +1202,7 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
     try:
         set_offload_mode(offload_mode)
         set_guidance(guidance)
-        base_prompt = _apply_wildcards(prompt, _seed_rng(seed))   # __name__ -> random line
+        base_prompt = _apply_wildcards(prompt, _seed_rng(seed), index=0)  # __name__ -> line
         picked_styles = _pick_styles(styles, style_random)        # noms de styles -> meta
         full_prompt, full_negative = _apply_styles(base_prompt, negative, picked_styles)
         mode = "img2img/upscale" if (use_input and input_image is not None) else "txt2img"
@@ -1276,7 +1276,7 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
             progress(i / n, desc=f"Image {i + 1}/{n}")
             # Wildcards (__name__) + style aleatoire, par image (seed -> reproductible)
             chosen = _pick_styles(styles, style_random)
-            p_i = _apply_wildcards(prompt, _seed_rng(s))
+            p_i = _apply_wildcards(prompt, _seed_rng(s), index=i)
             fp, fn = _apply_styles(p_i, negative, chosen)
             if style_random:
                 _log(f"random style #{i + 1}: {chosen}")
@@ -2490,6 +2490,14 @@ def build_ui():
                                  "prompt/seed/params. crispz metadata (chunk + sidecar) is kept in both.")
                         meta_scheme_status = gr.Markdown("")
 
+                        gr.Markdown("### Generation")
+                        wildcards_order_cb = gr.Checkbox(
+                            value=bool(CONFIG.get("wildcards_in_order", False)),
+                            label="Read wildcards in order",
+                            info="Batch: each image takes the NEXT line of the wildcard file "
+                                 "(deterministic) instead of a random one.")
+                        wild_order_status = gr.Markdown("")
+
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
         use_input.change(lambda v: gr.update(visible=bool(v)), use_input, input_group)
@@ -2512,6 +2520,7 @@ def build_ui():
         # Actions
         hf_token_save_btn.click(_save_hf_token, [hf_token_tb], [hf_token_tb, hf_token_status])
         meta_scheme_dd.change(set_metadata_scheme, [meta_scheme_dd], [meta_scheme_status])
+        wildcards_order_cb.change(set_wildcards_in_order, [wildcards_order_cb], [wild_order_status])
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         save_paths_btn.click(_save_paths_to_prefs,
                              [esrgan_dir_tb, ckpt_dir_tb, ckpt_extra_dir_tb, lora_dir_tb, wild_dir_tb],

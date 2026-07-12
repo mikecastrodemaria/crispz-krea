@@ -71,13 +71,26 @@ def list_wildcards():
     return sorted(f[:-4] for f in os.listdir(WILDCARDS_DIR) if f.lower().endswith(".txt"))
 
 
-def _apply_wildcards(text, rng=None):
-    """Remplace les __nom__ par une ligne aleatoire de wildcards/nom.txt (gere
-    l'imbrication: une ligne peut contenir d'autres __wildcards__)."""
+READ_WILDCARDS_IN_ORDER = bool(CONFIG.get("wildcards_in_order", False))
+
+
+def set_wildcards_in_order(v):
+    """Bascule le mode de lecture des wildcards (aleatoire <-> dans l'ordre)."""
+    global READ_WILDCARDS_IN_ORDER
+    READ_WILDCARDS_IN_ORDER = bool(v)
+    return f"Wildcards: {'in order' if READ_WILDCARDS_IN_ORDER else 'random'}"
+
+
+def _apply_wildcards(text, rng=None, index=None):
+    """Remplace les __nom__ par une ligne de wildcards/nom.txt (gere l'imbrication).
+    Par defaut: ligne ALEATOIRE (rng, reproductible par seed). Si READ_WILDCARDS_IN_ORDER
+    et index fourni: prend la ligne (index % nb_lignes) -> parcourt le fichier au fil du
+    batch, de facon deterministe (facon Fooocus 'read wildcards in order')."""
     if not text or "__" not in text:
         return text
     import re
     rng = rng or random
+    in_order = READ_WILDCARDS_IN_ORDER and index is not None
     for _ in range(64):  # garde-fou anti-boucle
         m = re.search(r"__([A-Za-z0-9_\-/]+)__", text)
         if not m:
@@ -91,7 +104,7 @@ def _apply_wildcards(text, rng=None):
                     lines = [ln.strip() for ln in fh
                              if ln.strip() and not ln.lstrip().startswith("#")]
                 if lines:
-                    repl = rng.choice(lines)
+                    repl = lines[int(index) % len(lines)] if in_order else rng.choice(lines)
             except Exception:
                 pass
         text = text[:m.start()] + repl + text[m.end():]
