@@ -210,7 +210,9 @@ def _scan_catalog(model_dir, out_dir, kind):
                 "file": rel, "name": os.path.splitext(os.path.basename(f))[0],
                 "thumb": thumb, "img": img, "day": sub or "(root)",
                 "mode": kind[:-1], "size": f"{size_mb:.0f} MB", "prompt": trig,
-                "examples": [e.get("url") for e in (civ.get("examples") or []) if e.get("url")][:8],
+                "examples": [{"url": e.get("url"), "prompt": e.get("prompt") or "",
+                              "width": e.get("width"), "height": e.get("height")}
+                             for e in (civ.get("examples") or []) if e.get("url")][:8],
                 "civitai": civ.get("url") or "",
             })
     entries.sort(key=lambda e: e["file"].lower())

@@ -3,6 +3,29 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.7.2 — 2026-07-14 — CivitAI fetch: live progress + example viewer with prompts
+
+Two UX fixes on the Asset Browser's **🔎 Fetch from CivitAI** button (1.7.1).
+
+- **Live progress instead of a silent freeze.** The fetch now runs in a background
+  thread and the model lightbox shows a status line with a spinner + progress bar that
+  advances through the real phases: **`Hashing model file… 42%`** (a *real* byte-percentage
+  — the only slow step, and only when there is no `<name>.metadata.json` sidecar) →
+  `Querying CivitAI…` → `Fetching example images…` → `Downloading preview…`, then an inline
+  ✅/⚠️ result (no more blocking `alert()`). The button is disabled while it runs.
+  New Gradio endpoint `civitai_progress`; the client polls it every ~400 ms.
+- **Example images are now clickable.** Each CivitAI example opens a full-screen viewer
+  showing the image **large** with its **generation prompt** underneath (+ **Copy prompt**
+  and *Open image*), and **← / →** (mouse or keyboard) to browse between examples. The
+  example prompts were already downloaded into `<name>.civitai.json` — the catalog now
+  carries them through (`{url, prompt, width, height}`) instead of the URL alone.
+- No new dependency, no new config; purely additive to the existing button. Robust:
+  any error is shown inline and never blocks the browser.
+- Files: `cz_civitai.py` (`fetch_civitai_for_model(progress=…)` + real hash %),
+  `cz_ui.py` (threaded job registry + `civitai_progress` endpoint),
+  `cz_assetbrowser.py` (keep example prompts in the catalog),
+  `cz_assets.py` (status bar, polling, example viewer + CSS).
+
 ## 1.7.1 — 2026-07-12 — Asset Browser: CivitAI enrichment (previews / trigger words / examples)
 
 - New **`cz_civitai.py`** (technique from Fooocus2026): looks a model/LoRA up on **CivitAI

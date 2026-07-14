@@ -1155,20 +1155,65 @@ def _ui_gallery_open(output_dir):
     return "Opening Asset Browser in a new tab (indexing in background)...", url
 
 
+# Registre des jobs CivitAI en cours (cle = chemin absolu du .safetensors). Chaque etat:
+# {phase, frac (0..1 ou null), text, done, ok, message}. Ecrit par le thread de fetch,
+# lu par _api_civitai_progress (polling depuis l'Asset Browser).
+_CIVITAI_JOBS = {}
+_CIVITAI_LOCK = threading.Lock()
+
+
+def _civitai_job_set(key, **fields):
+    with _CIVITAI_LOCK:
+        st = _CIVITAI_JOBS.get(key) or {}
+        st.update(fields)
+        _CIVITAI_JOBS[key] = st
+
+
 def _api_civitai_fetch(rel, kind):
-    """API (appelee par l'Asset Browser): enrichit un modele depuis CivitAI (preview +
-    trigger words + exemples), puis reconstruit le catalogue LoRAs/Models."""
+    """API (Asset Browser): demarre l'enrichissement CivitAI d'un modele EN ARRIERE-PLAN
+    et renvoie immediatement la cle du job. Le client interroge ensuite civitai_progress.
+    Un thread execute le fetch (preview + trigger words + exemples), met a jour l'etat a
+    chaque phase, puis reconstruit le catalogue LoRAs/Models."""
     try:
         import cz_civitai
         mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
-        res = cz_civitai.fetch_civitai_for_model(os.path.join(mdir, rel or ""))
-        try:
-            ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR)
-        except Exception as e:
-            _dbg(f"catalog rebuild after civitai fetch failed: {e}")
-        return res.get("message", "done")
+        path = os.path.join(mdir, rel or "")
+        key = os.path.abspath(path)
+        _civitai_job_set(key, phase="start", frac=None, text="Starting…",
+                         done=False, ok=False, message="")
+
+        def _progress(phase, frac, text):
+            _civitai_job_set(key, phase=phase, frac=frac, text=text, done=False)
+
+        def _work():
+            try:
+                res = cz_civitai.fetch_civitai_for_model(path, progress=_progress)
+                try:
+                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
+                                     cz_pipeline.CHECKPOINTS_DIR)
+                except Exception as e:
+                    _dbg(f"catalog rebuild after civitai fetch failed: {e}")
+                _civitai_job_set(key, phase="done", frac=1.0, done=True,
+                                 ok=bool(res.get("success")),
+                                 text=res.get("message", "done"),
+                                 message=res.get("message", "done"))
+            except Exception as e:
+                _civitai_job_set(key, phase="error", frac=None, done=True, ok=False,
+                                 text=f"error: {e}", message=f"error: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+        return key
     except Exception as e:
         return f"error: {e}"
+
+
+def _api_civitai_progress(key):
+    """API (Asset Browser): etat courant d'un job CivitAI (JSON). done=true quand fini."""
+    with _CIVITAI_LOCK:
+        st = _CIVITAI_JOBS.get(key)
+        st = dict(st) if st else {"phase": "unknown", "frac": None, "text": "",
+                                  "done": True, "ok": False, "message": "no such job"}
+    return json.dumps(st)
 
 
 # delete_asset -> cz_assetbrowser.py (importe en tete; expose via api_name dans build_ui).
@@ -2227,6 +2272,11 @@ def build_ui():
         cf_out = gr.Textbox(visible=False)
         cf_btn = gr.Button(visible=False)
         cf_btn.click(_api_civitai_fetch, [cf_rel, cf_kind], cf_out, api_name="civitai_fetch")
+        # Endpoint de progression (polling par l'Asset Browser pendant le fetch CivitAI)
+        cp_in = gr.Textbox(visible=False)
+        cp_out = gr.Textbox(visible=False)
+        cp_btn = gr.Button(visible=False)
+        cp_btn.click(_api_civitai_progress, cp_in, cp_out, api_name="civitai_progress")
 
         with gr.Row():
             # ===== Colonne principale (apercu en haut, prompt + Generate, negative, input) =====

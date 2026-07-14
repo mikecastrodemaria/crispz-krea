@@ -65,21 +65,32 @@ def _sidecar_sha256(safepath):
     return None
 
 
-def _compute_sha256(safepath):
+def _compute_sha256(safepath, progress=None):
+    """SHA256 en streaming. Rapporte un % REEL via progress('hash', frac, texte) — c'est
+    la seule phase potentiellement longue (fichiers multi-Go sans sidecar)."""
     h = hashlib.sha256()
+    try:
+        total = os.path.getsize(safepath)
+    except Exception:
+        total = 0
+    done = 0
     with open(safepath, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
+            done += len(chunk)
+            if progress and total:
+                pct = done / total
+                progress("hash", pct, f"Hashing model file… {int(pct * 100)}%")
     return h.hexdigest()
 
 
-def model_sha256(safepath, allow_compute=True):
+def model_sha256(safepath, allow_compute=True, progress=None):
     sha = _sidecar_sha256(safepath)
     if sha:
         return sha
     if allow_compute:
         try:
-            return _compute_sha256(safepath)
+            return _compute_sha256(safepath, progress=progress)
         except Exception as e:
             _dbg(f"sha256 compute failed {safepath}: {e}")
     return None
@@ -129,9 +140,18 @@ def load_civitai_sidecar(safepath):
     return {}
 
 
-def fetch_civitai_for_model(safepath, api_key=None, overwrite=False):
+def fetch_civitai_for_model(safepath, api_key=None, overwrite=False, progress=None):
     """Enrichit un .safetensors depuis CivitAI: ecrit '<stem>.preview.png' (si absent) et
-    '<stem>.civitai.json' (trainedWords + examples). Renvoie {success, message, triggers}."""
+    '<stem>.civitai.json' (trainedWords + examples). Renvoie {success, message, triggers}.
+
+    progress(phase, frac, text) est appele a chaque etape (phase: hash|query|images|
+    download). frac est un % reel pour 'hash' seulement (sinon None -> barre indeterminee)."""
+    def _p(phase, frac, text):
+        if progress:
+            try:
+                progress(phase, frac, text)
+            except Exception:
+                pass
     if not safepath or not os.path.isfile(safepath):
         return {"success": False, "message": "model file not found"}
     api_key = api_key or API_KEY
@@ -141,12 +161,15 @@ def fetch_civitai_for_model(safepath, api_key=None, overwrite=False):
         want_preview = False
     else:
         want_preview = True
-    sha = model_sha256(safepath)
+    _p("hash", None, "Reading model hash…")
+    sha = model_sha256(safepath, progress=progress)
     if not sha:
         return {"success": False, "message": "no SHA256 (metadata.json missing + hashing failed)"}
+    _p("query", None, "Querying CivitAI…")
     ver = get_version_by_hash(sha, api_key)
     if not ver:
         return {"success": False, "message": "not found on CivitAI (unknown hash)"}
+    _p("images", None, "Fetching example images…")
     imgs = get_top_images(ver["versionId"], api_key, limit=8) if ver.get("versionId") else []
     saved_preview = False
     if want_preview:
@@ -154,6 +177,7 @@ def fetch_civitai_for_model(safepath, api_key=None, overwrite=False):
         if url:
             try:
                 from PIL import Image
+                _p("download", None, "Downloading preview…")
                 im = Image.open(io.BytesIO(_download(url))).convert("RGB")
                 im.save(stem + ".preview.png", "PNG", optimize=True)
                 saved_preview = True

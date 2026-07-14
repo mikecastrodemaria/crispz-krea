@@ -59,6 +59,31 @@ body.blur .cell img{filter:blur(14px)}body.blur .cell:hover img{filter:none}
 .nav{position:fixed;top:50%;transform:translateY(-50%);font-size:40px;color:#fff;cursor:pointer;
 user-select:none;padding:0 14px;opacity:.7}.nav:hover{opacity:1}#prev{left:0}#next{right:344px}
 #close{position:fixed;top:10px;right:352px;font-size:30px;color:#fff;cursor:pointer;z-index:11}
+.ex img{cursor:zoom-in;transition:transform .12s}.ex img:hover{transform:scale(1.05)}
+/* Statut du fetch CivitAI (barre + phase) dans le panneau lateral */
+.cvstatus{margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:8px;background:#141b29}
+.cvstatus .lbl{display:flex;align-items:center;gap:8px;font-size:12px;color:#cfd8e6}
+.cvstatus.err .lbl{color:#ff9db0}.cvstatus.ok .lbl{color:#8fe0a5}
+.spin{width:14px;height:14px;border:2px solid #3a6ea5;border-top-color:transparent;border-radius:50%;
+display:inline-block;animation:cvspin .7s linear infinite;flex:0 0 auto}
+@keyframes cvspin{to{transform:rotate(360deg)}}
+.cvbar{height:6px;margin-top:8px;border-radius:4px;background:#0e1626;overflow:hidden}
+.cvbar>i{display:block;height:100%;background:linear-gradient(90deg,#3a6ea5,#6aa6e0);width:0;
+border-radius:4px;transition:width .25s}
+.cvbar.indet>i{width:35%;animation:cvindet 1.1s ease-in-out infinite}
+@keyframes cvindet{0%{margin-left:-35%}100%{margin-left:100%}}
+button:disabled{opacity:.6;cursor:default}
+/* Visionneuse d'exemples (grand format + prompt), au-dessus de la lightbox */
+#exlb{position:fixed;inset:0;background:#000e;z-index:20;display:none;
+grid-template-columns:1fr 360px}#exlb.open{display:grid}
+#eximg{display:flex;align-items:center;justify-content:center;padding:16px;min-width:0}
+#eximg img{max-width:100%;max-height:96vh;object-fit:contain;border-radius:6px}
+#exside{background:var(--panel);border-left:1px solid var(--line);padding:16px;overflow:auto;font-size:13px}
+#exside h3{margin:.2em 0 .4em;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+#exside .v{margin:0 0 10px;word-break:break-word;white-space:pre-wrap;line-height:1.4}
+#exclose{position:fixed;top:10px;right:372px;font-size:30px;color:#fff;cursor:pointer;z-index:21}
+#exlb .nav{z-index:21}#exprev{left:0}#exnext{right:364px}
+#excount{color:var(--mut);font-size:12px;margin-bottom:8px}
 </style></head><body>
 <header><h1>🖼️ crispz-studio</h1>
 <input id="q" placeholder="Search metadata (prompt, style, model, seed, sampler...)" style="flex:1;min-width:160px">
@@ -71,11 +96,15 @@ user-select:none;padding:0 14px;opacity:.7}.nav:hover{opacity:1}#prev{left:0}#ne
 <div id="lb"><span id="close">&times;</span><span class="nav" id="prev">&#10094;</span>
 <span class="nav" id="next">&#10095;</span><div id="lbimg"><img id="big"></div>
 <div id="side"></div></div>
+<div id="exlb"><span id="exclose">&times;</span><span class="nav" id="exprev">&#10094;</span>
+<span class="nav" id="exnext">&#10095;</span><div id="eximg"><img id="exbig"></div>
+<div id="exside"></div></div>
 <script>
-let DATA=[],VIEW=[],cur=0;
+let DATA=[],VIEW=[],cur=0,EX=[],excur=0;
 const grid=document.getElementById('grid'),lb=document.getElementById('lb'),big=document.getElementById('big'),
 side=document.getElementById('side'),q=document.getElementById('q'),cnt=document.getElementById('count'),
-folders=document.getElementById('folders');
+folders=document.getElementById('folders'),
+exlb=document.getElementById('exlb'),exbig=document.getElementById('exbig'),exside=document.getElementById('exside');
 function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function render(){grid.innerHTML='';VIEW.forEach((e,i)=>{const c=document.createElement('div');
 const label=e.name||e.file;const hasImg=!!(e.thumb||e.img)||curSource==='outputs';
@@ -117,9 +146,11 @@ h+='<button onclick="cp(\''+'prompt'+'\')">Copy '+(isOut?'prompt':'triggers')+'<
 h+='<button onclick="cp(\''+'all'+'\')">Copy all</button>';
 if(isOut){h+='<a href="'+encodeURI(e.file)+'" download="'+esc(e.file.split('/').pop())+'" style="margin-left:6px;color:#9fb3d6">Download</a>';
 h+='<button onclick="delAsset()" style="margin-left:6px;background:#5a2230;border-color:#7a2e40">Delete</button>';}
-else{h+='<button onclick="civitaiFetch()" style="margin-left:6px;background:#274b6d;border-color:#3a6ea5">🔎 Fetch from CivitAI</button>';
+else{h+='<button id="cvbtn" onclick="civitaiFetch()" style="margin-left:6px;background:#274b6d;border-color:#3a6ea5">🔎 Fetch from CivitAI</button>';
 if(e.civitai)h+='<a href="'+encodeURI(e.civitai)+'" target="_blank" style="margin-left:6px;color:#9fb3d6">CivitAI page</a>';
-if(e.examples&&e.examples.length){h+='<h3>Examples</h3><div class="ex">'+e.examples.map(function(u){return '<img loading="lazy" src="'+encodeURI(u)+'">';}).join('')+'</div>';}}
+EX=(e.examples||[]).map(function(x){return (typeof x==='string')?{url:x,prompt:''}:x;}).filter(function(x){return x&&x.url;});
+if(EX.length){h+='<h3>Examples <span style="color:var(--mut);font-weight:400">(click to enlarge)</span></h3><div class="ex">'+
+EX.map(function(x,ix){return '<img loading="lazy" src="'+encodeURI(x.url)+'" onclick="exOpen('+ix+')" title="'+esc((x.prompt||'').slice(0,140))+'">';}).join('')+'</div>';}}
 side.innerHTML=h;lb.classList.add('open');}
 function cp(what){const e=VIEW[cur];let t=e.prompt||'';if(what==='all')t=JSON.stringify(e,null,2);
 navigator.clipboard.writeText(t).catch(()=>{});}
@@ -128,19 +159,61 @@ try{const r=await fetch('/gradio_api/call/delete_asset',{method:'POST',headers:{
 body:JSON.stringify({data:[e.file]})});const j=await r.json();const eid=j.event_id||j.hash;
 if(eid){await fetch('/gradio_api/call/delete_asset/'+eid);}
 DATA=DATA.filter(x=>x.file!==e.file);close();filter();}catch(err){alert('Delete failed: '+err);}}
+// Appel generique d'un endpoint Gradio (POST event_id -> GET stream -> 1re sortie)
+async function gcall(name,data){
+const r=await fetch('/gradio_api/call/'+name,{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({data:data})});const j=await r.json();const eid=j.event_id||j.hash;if(!eid)return null;
+const t=await (await fetch('/gradio_api/call/'+name+'/'+eid)).text();
+const m=t.match(/data:\s*(\[[\s\S]*?\])/);if(m){try{return JSON.parse(m[1])[0];}catch(_){}}return null;}
+function _sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+function cvBar(frac){var pct=(frac==null?'':(Math.max(0,Math.min(1,frac))*100).toFixed(0)+'%');
+return '<div class="cvbar'+(frac==null?' indet':'')+'"><i style="width:'+pct+'"></i></div>';}
+function cvStatus(text,frac,cls,spin){var s=document.getElementById('cvstatus');
+if(!s){s=document.createElement('div');s.id='cvstatus';side.appendChild(s);}
+s.className='cvstatus'+(cls?' '+cls:'');
+s.innerHTML='<div class="lbl">'+(spin?'<span class="spin"></span>':'')+'<span>'+esc(text)+'</span></div>'+
+(cls?'':cvBar(frac));return s;}
 async function civitaiFetch(){const e=VIEW[cur];if(!e)return;
-try{const r=await fetch('/gradio_api/call/civitai_fetch',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({data:[e.file, e.mode==='lora'?'loras':'models']})});
-const j=await r.json();const eid=j.event_id||j.hash;let msg='done';
-if(eid){const t=await (await fetch('/gradio_api/call/civitai_fetch/'+eid)).text();
-const m=t.match(/data:\s*(\[[\s\S]*?\])/);if(m){try{msg=JSON.parse(m[1])[0];}catch(_){}}}
-alert('CivitAI — '+msg);close();loadSource(curSource);}catch(err){alert('CivitAI fetch failed: '+err);}}
+const btn=document.getElementById('cvbtn');if(btn)btn.disabled=true;
+cvStatus('Starting…',null,'',true);
+try{const key=await gcall('civitai_fetch',[e.file, e.mode==='lora'?'loras':'models']);
+if(!key||(''+key).indexOf('error:')===0)throw new Error(key||'no job started');
+var st=null;
+for(var i=0;i<1200;i++){var raw=await gcall('civitai_progress',[key]);
+st=(typeof raw==='string')?(function(){try{return JSON.parse(raw);}catch(_){return null;}})():raw;
+if(st){cvStatus(st.text||st.phase||'Working…',(st.frac==null?null:st.frac),'',true);
+if(st.done)break;}
+await _sleep(400);}
+var ok=!!(st&&st.ok),msg=(st&&(st.message||st.text))||'done';
+cvStatus((ok?'✅ ':'⚠️ ')+msg,null,ok?'ok':'err',false);
+if(ok)setTimeout(function(){close();loadSource(curSource);},1000);
+}catch(err){cvStatus('⚠️ CivitAI fetch failed: '+err,null,'err',false);}
+finally{if(btn)btn.disabled=false;}}
+// --- Visionneuse d'exemples (grand format + prompt + navigation) ---
+function exRender(){var x=EX[excur];if(!x)return;exbig.src=encodeURI(x.url);
+var h='<div id="excount">'+(excur+1)+' / '+EX.length+'</div>';
+h+='<h3>Prompt</h3><div class="v">'+esc(x.prompt||'(no prompt provided by CivitAI)')+'</div>';
+if(x.width&&x.height)h+='<h3>Size</h3><div class="v">'+esc(x.width)+' × '+esc(x.height)+'</div>';
+h+='<button onclick="exCopy()">Copy prompt</button>';
+h+='<a href="'+encodeURI(x.url)+'" target="_blank" style="margin-left:6px;color:#9fb3d6">Open image</a>';
+exside.innerHTML=h;}
+function exOpen(ix){if(!EX.length)return;excur=(ix+EX.length)%EX.length;exRender();exlb.classList.add('open');}
+function exClose(){exlb.classList.remove('open');}
+function exNav(d){if(!EX.length)return;excur=(excur+d+EX.length)%EX.length;exRender();}
+function exCopy(){var x=EX[excur];if(x)navigator.clipboard.writeText(x.prompt||'').catch(function(){});}
+document.getElementById('exclose').onclick=exClose;
+document.getElementById('exprev').onclick=function(){exNav(-1);};
+document.getElementById('exnext').onclick=function(){exNav(1);};
+exlb.onclick=function(ev){if(ev.target===exlb||ev.target===exbig.parentNode)exClose();};
 function close(){lb.classList.remove('open');}
 document.getElementById('close').onclick=close;
 document.getElementById('prev').onclick=()=>open((cur-1+VIEW.length)%VIEW.length);
 document.getElementById('next').onclick=()=>open((cur+1)%VIEW.length);
 lb.onclick=ev=>{if(ev.target===lb||ev.target===big.parentNode)close();};
-document.addEventListener('keydown',ev=>{if(!lb.classList.contains('open'))return;
+document.addEventListener('keydown',ev=>{
+if(exlb.classList.contains('open')){if(ev.key==='Escape')exClose();
+if(ev.key==='ArrowLeft')exNav(-1);if(ev.key==='ArrowRight')exNav(1);return;}
+if(!lb.classList.contains('open'))return;
 if(ev.key==='Escape')close();if(ev.key==='ArrowLeft')document.getElementById('prev').click();
 if(ev.key==='ArrowRight')document.getElementById('next').click();});
 q.oninput=filter;

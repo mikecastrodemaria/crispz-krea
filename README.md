@@ -72,7 +72,10 @@ SwarmUI. On top of crispz's upscaler it adds:
   (models show a Civitai preview if one sits next to the `.safetensors`, else a placeholder
   + trigger words). A **🔎 Fetch from CivitAI** button (per model, in its lightbox) looks the
   model up by **SHA256** and pulls its **preview + trigger words + example images** (saved as
-  `<name>.preview.png` + `<name>.civitai.json`). Plus a per-session history in the app. The **Output folder** can point
+  `<name>.preview.png` + `<name>.civitai.json`). The fetch shows **live progress** (spinner +
+  bar: real `Hashing… %` when the file must be hashed, then Querying / Downloading) with an
+  inline ✅/⚠️ result. **Example images are clickable** → a full-screen viewer shows each
+  example **large with its generation prompt** (Copy prompt) and **← / →** to browse. Plus a per-session history in the app. The **Output folder** can point
   anywhere (even another drive); a folder typed into the UI at runtime is auto-authorised,
   so the browser opens without a Gradio *"File not allowed"* error. (In `config.txt`, write
   Windows paths with `/` or `\\` — a single `\` is an illegal JSON escape.)
