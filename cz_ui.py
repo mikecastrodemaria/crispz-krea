@@ -221,6 +221,7 @@ if isinstance(CONFIG.get("performance_presets"), dict) and CONFIG["performance_p
 # stop/progress + generation/orchestration. app lit l'etat via cz_pipeline.NAME et
 # pose cz_pipeline._PROGRESS / cz_pipeline._STOP depuis les handlers UI.
 import cz_pipeline
+import cz_civitai
 from cz_pipeline import (  # noqa: E402,F401
     set_guidance, request_stop, set_zimage_model, set_zimage_transformer,
     list_checkpoints, list_loras, set_checkpoints_dir, set_checkpoints_extra_dir,
@@ -750,6 +751,21 @@ def _save_hf_token(token):
                                  "Gated downloads (e.g. FLUX.1-Krea-dev) will now authenticate.")
 
 
+def _save_civitai_key(token):
+    """Advanced: pose + persiste la cle CivitAI (preferences.json). Utilisee par
+    'Fetch from CivitAI' dans l'Asset Browser. Vide le champ apres coup."""
+    token = (token or "").strip()
+    if not token:
+        return gr.update(), ("✅ A CivitAI key is set." if cz_civitai.API_KEY
+                             else "Enter a CivitAI API key to save.")
+    cz_civitai.set_api_key(token)
+    try:
+        _save_prefs_keys({"civitai_api_key": token})
+    except Exception:
+        pass
+    return gr.update(value=""), "✅ CivitAI key saved (preferences.json) and applied."
+
+
 def _save_paths_to_prefs(esrgan_dir, checkpoints_dir=None, checkpoints_extra_dir=None,
                          loras_dir=None, wildcards_dir=None):
     """Persiste les chemins dans preferences.json (local) -> charges au prochain boot.
@@ -1145,8 +1161,7 @@ def _api_civitai_fetch(rel, kind):
     try:
         import cz_civitai
         mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
-        res = cz_civitai.fetch_civitai_for_model(
-            os.path.join(mdir, rel or ""), api_key=(CONFIG.get("civitai_api_key") or None))
+        res = cz_civitai.fetch_civitai_for_model(os.path.join(mdir, rel or ""))
         try:
             ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR)
         except Exception as e:
@@ -2717,6 +2732,20 @@ def build_ui():
                             if hf_token_is_set() else
                             "No HF token set (only needed for gated models).")
 
+                        gr.Markdown("### CivitAI access (previews / trigger words)")
+                        with gr.Row():
+                            civitai_key_tb = gr.Textbox(
+                                value="", type="password", scale=3, label="CivitAI API key",
+                                placeholder="CivitAI token (optional)",
+                                info="Saved to preferences.json (gitignored). Used by 'Fetch from "
+                                     "CivitAI' in the Asset Browser. Public models work without a key; "
+                                     "a key unlocks gated/NSFW previews and avoids rate limits.")
+                            civitai_key_save_btn = gr.Button("Save key", size="sm", scale=1,
+                                                             variant="primary")
+                        civitai_key_status = gr.Markdown(
+                            "✅ A CivitAI key is set." if cz_civitai.API_KEY
+                            else "No CivitAI key set (public models still work).")
+
                         gr.Markdown("### Metadata")
                         meta_scheme_dd = gr.Dropdown(
                             choices=[("crispz (json)", "crispz"),
@@ -2765,6 +2794,8 @@ def build_ui():
 
         # Actions
         hf_token_save_btn.click(_save_hf_token, [hf_token_tb], [hf_token_tb, hf_token_status])
+        civitai_key_save_btn.click(_save_civitai_key, [civitai_key_tb],
+                                   [civitai_key_tb, civitai_key_status])
         meta_scheme_dd.change(set_metadata_scheme, [meta_scheme_dd], [meta_scheme_status])
         wildcards_order_cb.change(set_wildcards_in_order, [wildcards_order_cb], [wild_order_status])
         save_pre_upscale_cb.change(cz_pipeline.set_save_pre_upscale, [save_pre_upscale_cb], None)

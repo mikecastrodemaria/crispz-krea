@@ -20,10 +20,19 @@ import hashlib
 import urllib.request
 import urllib.parse
 
-from cz_core import _log, _dbg
+from cz_core import _log, _dbg, CONFIG, _prefs
 
 CIVITAI_API = "https://civitai.com/api/v1"
 _UA = "crispz-studio/asset-browser"
+
+# Cle API CivitAI (optionnelle: previews gated/NSFW + anti rate-limit). Source: UI
+# (preferences.json) -> config.txt. Reglable a chaud via set_api_key().
+API_KEY = (str(_prefs.get("civitai_api_key") or CONFIG.get("civitai_api_key") or "").strip() or None)
+
+
+def set_api_key(k):
+    global API_KEY
+    API_KEY = (str(k or "").strip() or None)
 
 
 def _api_get(endpoint, params=None, api_key=None, timeout=20):
@@ -125,6 +134,7 @@ def fetch_civitai_for_model(safepath, api_key=None, overwrite=False):
     '<stem>.civitai.json' (trainedWords + examples). Renvoie {success, message, triggers}."""
     if not safepath or not os.path.isfile(safepath):
         return {"success": False, "message": "model file not found"}
+    api_key = api_key or API_KEY
     stem = os.path.splitext(safepath)[0]
     if has_preview(safepath) and not overwrite:
         # On rafraichit quand meme les infos (triggers/examples), sans re-telecharger.

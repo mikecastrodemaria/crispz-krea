@@ -15,8 +15,9 @@ The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browse
   rebuilds the catalog and reloads — the placeholder becomes a real preview. The lightbox
   now shows **example images** + a **CivitAI page** link; the catalog reads trigger words
   from `<name>.civitai.json` (falling back to the safetensors header).
-- Optional **`civitai_api_key`** (config) for gated/NSFW previews; most public models work
-  without one.
+- Optional **CivitAI API key** — paste it in **Advanced > CivitAI access** (saved to
+  `preferences.json`) or set `civitai_api_key` in config; for gated/NSFW previews and to
+  avoid rate limits. Most public models work without one.
 - Files: `cz_civitai.py`, `cz_assetbrowser.py`, `cz_ui.py`, `cz_assets.py`, `cz_core.py`
   (`APP_VERSION` 1.7.1), `config-sample.txt`, `config_modification_tutorial.txt`.
 
