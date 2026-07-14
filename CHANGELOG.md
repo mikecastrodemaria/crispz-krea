@@ -3,6 +3,23 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.7.1 — 2026-07-12 — Asset Browser: CivitAI enrichment (previews / trigger words / examples)
+
+- New **`cz_civitai.py`** (technique from Fooocus2026): looks a model/LoRA up on **CivitAI
+  by its SHA256** — read from the sibling `<name>.metadata.json` when present, so multi-GB
+  checkpoints are **not** re-hashed — then fetches **trigger words** + top **example images**
+  and saves `<name>.preview.png` (the sidecar convention the Asset Browser already scans) +
+  `<name>.civitai.json`.
+- **Asset Browser** (LoRAs / Models tabs): a **🔎 Fetch from CivitAI** button in the model
+  lightbox (a `civitai_fetch` Gradio API endpoint) downloads the preview + trigger words,
+  rebuilds the catalog and reloads — the placeholder becomes a real preview. The lightbox
+  now shows **example images** + a **CivitAI page** link; the catalog reads trigger words
+  from `<name>.civitai.json` (falling back to the safetensors header).
+- Optional **`civitai_api_key`** (config) for gated/NSFW previews; most public models work
+  without one.
+- Files: `cz_civitai.py`, `cz_assetbrowser.py`, `cz_ui.py`, `cz_assets.py`, `cz_core.py`
+  (`APP_VERSION` 1.7.1), `config-sample.txt`, `config_modification_tutorial.txt`.
+
 ## 1.7.0 — 2026-07-12 — Presets, seed reuse, Advanced tab, PNG Info, a1111 metadata, Asset Browser overhaul
 
 A large UI/UX pass (all in the `cz_*` modules).

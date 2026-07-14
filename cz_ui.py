@@ -1139,6 +1139,23 @@ def _ui_gallery_open(output_dir):
     return "Opening Asset Browser in a new tab (indexing in background)...", url
 
 
+def _api_civitai_fetch(rel, kind):
+    """API (appelee par l'Asset Browser): enrichit un modele depuis CivitAI (preview +
+    trigger words + exemples), puis reconstruit le catalogue LoRAs/Models."""
+    try:
+        import cz_civitai
+        mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
+        res = cz_civitai.fetch_civitai_for_model(
+            os.path.join(mdir, rel or ""), api_key=(CONFIG.get("civitai_api_key") or None))
+        try:
+            ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR)
+        except Exception as e:
+            _dbg(f"catalog rebuild after civitai fetch failed: {e}")
+        return res.get("message", "done")
+    except Exception as e:
+        return f"error: {e}"
+
+
 # delete_asset -> cz_assetbrowser.py (importe en tete; expose via api_name dans build_ui).
 # _pil_to_b64_jpeg -> cz_core.py (importe en tete).
 
@@ -2189,6 +2206,12 @@ def build_ui():
         del_out = gr.Textbox(visible=False)
         del_btn = gr.Button(visible=False)
         del_btn.click(delete_asset, del_in, del_out, api_name="delete_asset")
+        # Endpoint API CivitAI (Asset Browser -> preview/trigger words/exemples d'un modele)
+        cf_rel = gr.Textbox(visible=False)
+        cf_kind = gr.Textbox(visible=False)
+        cf_out = gr.Textbox(visible=False)
+        cf_btn = gr.Button(visible=False)
+        cf_btn.click(_api_civitai_fetch, [cf_rel, cf_kind], cf_out, api_name="civitai_fetch")
 
         with gr.Row():
             # ===== Colonne principale (apercu en haut, prompt + Generate, negative, input) =====

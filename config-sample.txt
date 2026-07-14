@@ -88,6 +88,7 @@
     "metadata_scheme": "crispz",
     "wildcards_in_order": false,
     "save_pre_upscale": false,
+    "civitai_api_key": "",
     "asset_browser": {
         "enabled": false,
         "generate_thumbnails": true,

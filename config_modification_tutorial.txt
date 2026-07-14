@@ -138,6 +138,11 @@ default_output_dir      Folder for "local"/"custom" save modes. Absolute paths a
                         too: the folder is auto-authorised for the Asset Browser (no more
                         "File not allowed"), no restart needed.
 default_output_format   "png" | "jpg" | "webp".
+civitai_api_key         Optional CivitAI API token. In the Asset Browser (LoRAs/Models
+                        tabs), "Fetch from CivitAI" looks a model up by its SHA256, then
+                        saves <name>.preview.png + <name>.civitai.json (trigger words +
+                        example images). A key unlocks gated/NSFW previews; most public
+                        models work without one.
 date_subfolders         true (default) -> save into out/YYYY-MM-DD/ subfolders
                         (like Fooocus). The galleries/Asset Browser scan recursively.
 save_pre_upscale        false (default). true -> in txt2img + auto-upscale, ALSO save the

@@ -2,7 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
-> Current version: **1.7.0** — see [CHANGELOG.md](CHANGELOG.md).
+> Current version: **1.7.1** — see [CHANGELOG.md](CHANGELOG.md).
 
 ![crispz-studio — Z-Image creation + enhancement studio](assets/screenshot.png)
 
@@ -70,7 +70,9 @@ SwarmUI. On top of crispz's upscaler it adds:
   **hide** + a **Hidden** toggle (persisted), **defaults to today**; **metadata keyword
   search**, per-image copy/delete, NSFW blur; and **Outputs / LoRAs / Models** source tabs
   (models show a Civitai preview if one sits next to the `.safetensors`, else a placeholder
-  + trigger words). Plus a per-session history in the app. The **Output folder** can point
+  + trigger words). A **🔎 Fetch from CivitAI** button (per model, in its lightbox) looks the
+  model up by **SHA256** and pulls its **preview + trigger words + example images** (saved as
+  `<name>.preview.png` + `<name>.civitai.json`). Plus a per-session history in the app. The **Output folder** can point
   anywhere (even another drive); a folder typed into the UI at runtime is auto-authorised,
   so the browser opens without a Gradio *"File not allowed"* error. (In `config.txt`, write
   Windows paths with `/` or `\\` — a single `\` is an illegal JSON escape.)

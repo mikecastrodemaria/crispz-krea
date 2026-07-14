@@ -54,6 +54,8 @@ body.blur .cell img{filter:blur(14px)}body.blur .cell:hover img{filter:none}
 #side h3{margin:.2em 0 .4em;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 #side .v{margin:0 0 10px;word-break:break-word;white-space:pre-wrap}
 #side button{margin:4px 6px 4px 0}
+.ex{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:6px}
+.ex img{width:100%;border-radius:4px;display:block;background:#11182a}
 .nav{position:fixed;top:50%;transform:translateY(-50%);font-size:40px;color:#fff;cursor:pointer;
 user-select:none;padding:0 14px;opacity:.7}.nav:hover{opacity:1}#prev{left:0}#next{right:344px}
 #close{position:fixed;top:10px;right:352px;font-size:30px;color:#fff;cursor:pointer;z-index:11}
@@ -115,6 +117,9 @@ h+='<button onclick="cp(\''+'prompt'+'\')">Copy '+(isOut?'prompt':'triggers')+'<
 h+='<button onclick="cp(\''+'all'+'\')">Copy all</button>';
 if(isOut){h+='<a href="'+encodeURI(e.file)+'" download="'+esc(e.file.split('/').pop())+'" style="margin-left:6px;color:#9fb3d6">Download</a>';
 h+='<button onclick="delAsset()" style="margin-left:6px;background:#5a2230;border-color:#7a2e40">Delete</button>';}
+else{h+='<button onclick="civitaiFetch()" style="margin-left:6px;background:#274b6d;border-color:#3a6ea5">🔎 Fetch from CivitAI</button>';
+if(e.civitai)h+='<a href="'+encodeURI(e.civitai)+'" target="_blank" style="margin-left:6px;color:#9fb3d6">CivitAI page</a>';
+if(e.examples&&e.examples.length){h+='<h3>Examples</h3><div class="ex">'+e.examples.map(function(u){return '<img loading="lazy" src="'+encodeURI(u)+'">';}).join('')+'</div>';}}
 side.innerHTML=h;lb.classList.add('open');}
 function cp(what){const e=VIEW[cur];let t=e.prompt||'';if(what==='all')t=JSON.stringify(e,null,2);
 navigator.clipboard.writeText(t).catch(()=>{});}
@@ -123,6 +128,13 @@ try{const r=await fetch('/gradio_api/call/delete_asset',{method:'POST',headers:{
 body:JSON.stringify({data:[e.file]})});const j=await r.json();const eid=j.event_id||j.hash;
 if(eid){await fetch('/gradio_api/call/delete_asset/'+eid);}
 DATA=DATA.filter(x=>x.file!==e.file);close();filter();}catch(err){alert('Delete failed: '+err);}}
+async function civitaiFetch(){const e=VIEW[cur];if(!e)return;
+try{const r=await fetch('/gradio_api/call/civitai_fetch',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({data:[e.file, e.mode==='lora'?'loras':'models']})});
+const j=await r.json();const eid=j.event_id||j.hash;let msg='done';
+if(eid){const t=await (await fetch('/gradio_api/call/civitai_fetch/'+eid)).text();
+const m=t.match(/data:\s*(\[[\s\S]*?\])/);if(m){try{msg=JSON.parse(m[1])[0];}catch(_){}}}
+alert('CivitAI — '+msg);close();loadSource(curSource);}catch(err){alert('CivitAI fetch failed: '+err);}}
 function close(){lb.classList.remove('open');}
 document.getElementById('close').onclick=close;
 document.getElementById('prev').onclick=()=>open((cur-1+VIEW.length)%VIEW.length);
