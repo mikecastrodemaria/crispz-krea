@@ -134,6 +134,18 @@ def ab_open_fast(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as f:
         f.write(ASSET_BROWSER_HTML)
+    # Manifest STUB immediat si aucun n'existe -> la SPA charge tout de suite (plus jamais
+    # "No manifest") ; le vrai manifest (indexation en tache de fond) arrive via le polling.
+    idx_dir = os.path.join(d, "_index")
+    os.makedirs(idx_dir, exist_ok=True)
+    mpath = os.path.join(idx_dir, "manifest.json")
+    if not os.path.isfile(mpath):
+        try:
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"count": 0, "building": True, "blur": bool(blur),
+                           "generated": "", "images": []}, f)
+        except Exception as e:
+            _dbg(f"stub manifest failed: {e}")
     threading.Thread(
         target=lambda: ab_reindex(output_dir, thumb_size, quality, blur, gen_thumbs,
                                   background_thumbs=True),
