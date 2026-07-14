@@ -1155,6 +1155,38 @@ def _ui_gallery_open(output_dir):
     return "Opening Asset Browser in a new tab (indexing in background)...", url
 
 
+def _asset_focus_url(kind, name):
+    """Ouvre l'Asset Browser directement sur l'onglet 'loras' ou 'models', centre sur
+    'name' (fiche = preview + trigger words + exemples) quand c'est un fichier local.
+    Utilise par les icones a cote des dropdowns LoRA / checkpoint. Renvoie (status, url)."""
+    import urllib.parse
+    name = (name or "").strip()
+    out_dir = DEFAULT_OUTPUT_DIR
+    _allow_runtime_path(out_dir)
+    try:
+        idx = ab_open_fast(out_dir, _ab_get("thumbnail_size"), _ab_get("thumbnail_quality"),
+                           bool(_ab_get("blur_thumbnails")), bool(_ab_get("generate_thumbnails")))
+    except Exception as e:
+        return f"Asset Browser open failed: {e}", ""
+    # Catalogue construit SYNCHRONE ici (rapide: pas de hashing) pour que la cible soit
+    # presente dans loras.json/models.json au moment ou la SPA se focalise dessus.
+    try:
+        ab_build_catalog(out_dir, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR)
+    except Exception as e:
+        _dbg(f"catalog build (focus) failed: {e}")
+    focus = ""
+    if kind == "loras":
+        focus = name if name and name != "None" else ""            # list_loras -> chemin relatif
+    else:  # models: repo HF de base = pas de fichier local -> pas de focus (onglet seul)
+        if name and name not in ZIMAGE_BASE_REPOS:
+            focus = os.path.basename(name)                          # catalogue models indexe par nom de fichier
+    url = "/gradio_api/file=" + os.path.abspath(idx).replace("\\", "/") + "?src=" + kind
+    if focus:
+        url += "&focus=" + urllib.parse.quote(focus)
+    tgt = f" → {focus}" if focus else ""
+    return (f"Opening Asset Browser ({kind}{tgt})…", url)
+
+
 # Registre des jobs CivitAI en cours (cle = chemin absolu du .safetensors). Chaque etat:
 # {phase, frac (0..1 ou null), text, done, ok, message}. Ecrit par le thread de fetch,
 # lu par _api_civitai_progress (polling depuis l'Asset Browser).
@@ -2673,6 +2705,8 @@ def build_ui():
                                 _ckpt_value = cz_pipeline.BASE_REPO if cz_pipeline.BASE_REPO in _ckpt_choices else ZIMAGE_BASE_REPOS[0]
                                 ckpt_dd = gr.Dropdown(choices=_ckpt_choices,
                                                       value=_ckpt_value, label="Z-Image checkpoint", scale=3)
+                                ckpt_open_btn = gr.Button("\U0001F5BC️", size="sm", scale=0, min_width=44,
+                                                          elem_id="cz_ckpt_open")
                                 ckpt_refresh_btn = gr.Button("Refresh", size="sm", scale=1)
                             ckpt_status = gr.Markdown("")
                             with gr.Row():
@@ -2690,16 +2724,18 @@ def build_ui():
                             gr.Markdown("*Number of slots is set in Advanced > Generation "
                                         "(LoRA slots), or config `lora_slots`.*")
                             _lchoices = ["None"] + list_loras()
-                            lora_dds, lora_lws, lora_rows = [], [], []
+                            lora_dds, lora_lws, lora_rows, lora_open_btns = [], [], [], []
                             for _i in range(MAX_LORA_SLOTS):
                                 with gr.Row(visible=(_i < LORA_SLOTS)) as _row:
                                     _dd = gr.Dropdown(choices=_lchoices, value="None",
                                                       label=f"LoRA {_i + 1}", scale=3)
+                                    _ob = gr.Button("\U0001F5BC️", size="sm", scale=0, min_width=44)
                                     _lw = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT),
                                                     step=0.05, label=f"Weight {_i + 1}", scale=2)
                                 lora_dds.append(_dd)
                                 lora_lws.append(_lw)
                                 lora_rows.append(_row)
+                                lora_open_btns.append(_ob)
                             lora_refresh_btn = gr.Button("Refresh LoRA list", size="sm")
                             lora_keywords_tb = gr.Textbox(label="Keywords / trigger words", lines=2,
                                                           placeholder="Auto-filled from the selected LoRA(s).")
@@ -2899,6 +2935,13 @@ def build_ui():
         # Open Asset Browser in a new tab (fast: manifest now, thumbnails in background).
         ab_open_btn.click(_ui_gallery_open, [output_dir], [ab_status, gallery_url]).then(
             None, [gallery_url], None, js="(u) => { if (u) window.open(u, '_blank'); }")
+        # Icones 🖼️: ouvrir l'Asset Browser centre sur le checkpoint / la LoRA selectionne(e).
+        _open_js = "(u) => { if (u) window.open(u, '_blank'); }"
+        ckpt_open_btn.click(lambda n: _asset_focus_url("models", n), [ckpt_dd],
+                            [ckpt_status, gallery_url]).then(None, [gallery_url], None, js=_open_js)
+        for _dd, _ob in zip(lora_dds, lora_open_btns):
+            _ob.click(lambda n: _asset_focus_url("loras", n), [_dd],
+                      [lora_status, gallery_url]).then(None, [gallery_url], None, js=_open_js)
         log_level_dd.change(set_log_level, [log_level_dd], [log_level_status])
         caption_model_dd.change(_ui_set_caption_model, [caption_model_dd], [caption_model_status])
         detect_btn.click(_ui_detect_ollama, [ollama_url], [ollama_model, ollama_status])

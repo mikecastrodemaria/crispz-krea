@@ -75,7 +75,10 @@ SwarmUI. On top of crispz's upscaler it adds:
   `<name>.preview.png` + `<name>.civitai.json`). The fetch shows **live progress** (spinner +
   bar: real `Hashing… %` when the file must be hashed, then Querying / Downloading) with an
   inline ✅/⚠️ result. **Example images are clickable** → a full-screen viewer shows each
-  example **large with its generation prompt** (Copy prompt) and **← / →** to browse. Plus a per-session history in the app. The **Output folder** can point
+  example **large with its generation prompt** (Copy prompt) and **← / →** to browse. A small
+  **🖼️ icon** next to each **LoRA** dropdown and the **Z-Image checkpoint** dropdown
+  (Advanced) opens the Asset Browser **straight to that model's card** (its preview /
+  trigger words / examples). Plus a per-session history in the app. The **Output folder** can point
   anywhere (even another drive); a folder typed into the UI at runtime is auto-authorised,
   so the browser opens without a Gradio *"File not allowed"* error. (In `config.txt`, write
   Windows paths with `/` or `\\` — a single `\` is an illegal JSON escape.)

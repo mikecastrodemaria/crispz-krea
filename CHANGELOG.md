@@ -3,6 +3,22 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.7.3 — 2026-07-14 — Jump to a LoRA / checkpoint in the Asset Browser (🖼️ icon)
+
+Fooocus2026-style shortcut: a small **🖼️ icon** sits next to each **LoRA** dropdown
+(**Advanced ▸ LoRA**) and next to the **Z-Image checkpoint** dropdown (**Advanced ▸
+Models**). Clicking it opens the **Asset Browser in a new tab, already on the right source
+tab and focused on that item** — its lightbox (preview + trigger words + example images
+from 1.7.1/1.7.2) opens immediately.
+
+- The browser is opened at `index.html?src=loras|models&focus=<file>`; the SPA reads the
+  query on load, switches source, clears the folder filter and opens the matching card.
+- The catalog is (re)built synchronously before the tab opens so the target is present.
+- Base HF repos (Turbo/Base — no local file) just open the **Models** tab (nothing to
+  focus). `None` LoRA slots open the **LoRAs** tab.
+- Files: `cz_ui.py` (`_asset_focus_url` + 🖼️ buttons wired to each LoRA / the checkpoint),
+  `cz_assets.py` (query parsing + `_tryFocus`).
+
 ## 1.7.2 — 2026-07-14 — CivitAI fetch: live progress + example viewer with prompts
 
 Two UX fixes on the Asset Browser's **🔎 Fetch from CivitAI** button (1.7.1).

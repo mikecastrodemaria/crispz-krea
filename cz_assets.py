@@ -239,14 +239,17 @@ const f=ev.target.closest('.f');if(!f)return;curFolder=f.getAttribute('data-f')|
 renderFolders();filter();};
 document.getElementById('hiddenbtn').onclick=function(){showHidden=!showHidden;
 this.classList.toggle('on',showHidden);renderFolders();filter();};
-var _gen='';var _srcUrls={outputs:'_index/manifest.json',loras:'_index/loras.json',models:'_index/models.json'};
+var _gen='',_focus='';var _srcUrls={outputs:'_index/manifest.json',loras:'_index/loras.json',models:'_index/models.json'};
+function _tryFocus(){if(!_focus)return;curFolder='';_folderUserSet=true;renderFolders();filter();
+var ix=-1;for(var k=0;k<VIEW.length;k++){if(VIEW[k].file===_focus||VIEW[k].name===_focus){ix=k;break;}}
+if(ix>=0){open(ix);_focus='';}}
 function _apply(m){DATA=m.images||[];if(m.blur)document.body.classList.add('blur');renderFolders();filter();
 if(!DATA.length&&m&&m.building){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing your output folder… '+
 '(first run — can take ~30 s for large folders; it will fill in automatically)</p>';}}
 function loadSource(src){curSource=src;_folderUserSet=false;curFolder='';
 [].slice.call(document.querySelectorAll('.src')).forEach(function(b){b.classList.toggle('active',b.getAttribute('data-s')===src);});
 fetch(_srcUrls[src]+'?t='+Date.now()).then(function(r){return r.ok?r.json():null;}).then(function(m){
-if(m){if(src==='outputs')_gen=m.generated||'';_apply(m);}
+if(m){if(src==='outputs')_gen=m.generated||'';_apply(m);_tryFocus();}
 else{DATA=[];renderFolders();grid.innerHTML='<p style="padding:20px;color:#8b98ad">No '+src+' catalog yet (building in background). Reopen the Asset Browser in a few seconds.</p>';cnt.textContent='0 / 0';}});}
 [].slice.call(document.querySelectorAll('.src')).forEach(function(b){b.onclick=function(){loadSource(b.getAttribute('data-s'));};});
 function _poll(n){if(n<=0)return;setTimeout(function(){
@@ -256,7 +259,10 @@ function _load(tries){fetch('_index/manifest.json?t='+Date.now()).then(r=>{if(!r
 .then(m=>{_gen=m.generated||'';_apply(m);_poll(90);})
 .catch(e=>{if(tries>0){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing…</p>';setTimeout(()=>_load(tries-1),1200);}
 else grid.innerHTML='<p style="padding:20px;color:#8b98ad">No manifest. Click Reindex in crispz-studio.</p>';});}
-_load(25);
+(function(){try{var u=new URL(location.href);var s=u.searchParams.get('src');
+_focus=u.searchParams.get('focus')||'';
+if(s&&_srcUrls[s]){loadSource(s);return;}}catch(e){}
+_load(25);})();
 </script></body></html>
 """
 
