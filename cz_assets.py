@@ -104,6 +104,7 @@ grid-template-columns:1fr 360px}#exlb.open{display:grid}
 <button id="hiddenbtn" title="Show hidden folders">Hidden</button>
 <button id="blurbtn">Blur</button>
 <button id="fetchall" title="Fetch missing CivitAI info for every model in this tab" style="display:none">🔄 Fetch all missing</button>
+<button id="rebuildthumbs" title="Force-regenerate every thumbnail of this tab (parallel)">🖼 Rebuild ALL thumbnails (force)</button>
 <span id="count"></span></header>
 <div id="wrap"><aside id="folders"></aside><div id="grid"></div></div>
 <div id="lb"><span id="close">&times;</span><span class="nav" id="prev">&#10094;</span>
@@ -115,6 +116,10 @@ grid-template-columns:1fr 360px}#exlb.open{display:grid}
 <script>
 let DATA=[],VIEW=[],cur=0,EX=[],excur=0;
 var CZ_BATCH=("__CZ_BATCH__"==="1");   // bouton "Fetch all missing" (injecte par le serveur)
+// Anti-cache: apres un rebuild, les miniatures ont la MEME url -> le navigateur servirait
+// les anciennes. On suffixe un jeton pour forcer le rechargement.
+var _bust=0;
+function _bustUrl(u){return _bust?(u+(u.indexOf('?')<0?'?b=':'&b=')+_bust):u;}
 const grid=document.getElementById('grid'),lb=document.getElementById('lb'),big=document.getElementById('big'),
 side=document.getElementById('side'),q=document.getElementById('q'),cnt=document.getElementById('count'),
 folders=document.getElementById('folders'),
@@ -132,8 +137,8 @@ const thumb=encodeURI(e.thumb||e.img||e.file),full=encodeURI(e.img||e.file);let 
 im.onload=function(){im.classList.add('loaded');c.classList.add('loaded');};
 im.onerror=function(){if(thumb!==full&&tries>0){tries--;
 setTimeout(function(){im.src=thumb+(thumb.indexOf('?')<0?'?r=':'&r=')+Date.now();},2500);}
-else{im.onerror=null;im.src=full;}};
-im.src=thumb;
+else{im.onerror=null;im.src=_bustUrl(full);}};
+im.src=_bustUrl(thumb);
 const cap=document.createElement('div');cap.className='cap';cap.textContent=label;
 c.appendChild(im);c.appendChild(cap);
 if(e.update){var ub=document.createElement('div');ub.className='upd';ub.textContent='⚠ update';
@@ -198,7 +203,7 @@ cvStatus('Starting…',null,'',true);
 try{const key=await gcall('civitai_fetch',[e.file, e.mode==='lora'?'loras':'models']);
 if(!key||(''+key).indexOf('error:')===0)throw new Error(key||'no job started');
 var st=null;
-for(var i=0;i<1200;i++){var raw=await gcall('civitai_progress',[key]);
+for(var i=0;i<1200;i++){var raw=await gcall('job_progress',[key]);
 st=(typeof raw==='string')?(function(){try{return JSON.parse(raw);}catch(_){return null;}})():raw;
 if(st){cvStatus(st.text||st.phase||'Working…',(st.frac==null?null:st.frac),'',true);
 if(st.done)break;}
@@ -218,7 +223,7 @@ batchStatus('<span class="spin"></span>Starting batch…');
 try{var key=await gcall('civitai_fetch_all',[src]);
 if(!key||(''+key).indexOf('error:')===0)throw new Error(key||'batch not started');
 var st=null;
-for(var k=0;k<200000;k++){var raw=await gcall('civitai_progress',[key]);
+for(var k=0;k<200000;k++){var raw=await gcall('job_progress',[key]);
 st=(typeof raw==='string')?(function(){try{return JSON.parse(raw);}catch(_){return null;}})():raw;
 if(st){var c=(st.n?(' '+(st.i||0)+'/'+st.n):'');
 batchStatus('<span class="spin"></span>Batch'+c+' — '+esc(st.text||'working…'));
@@ -229,6 +234,26 @@ batchStatus('✅ Batch done: '+(sm.enriched||0)+' enriched · '+(sm.updated||0)+
 (sm.skipped||0)+' skipped · '+(sm.failed||0)+' failed',(st&&st.ok)?'ok':'err');
 loadSource(src);setTimeout(function(){batchStatus('');},7000);
 }catch(err){batchStatus('⚠️ Batch failed: '+esc(''+err),'err');}
+finally{if(btn)btn.disabled=false;}}
+// --- Rebuild force de TOUTES les miniatures de l'onglet courant (parallele, en fond) ---
+async function rebuildThumbs(){var src=curSource;
+if(!confirm('Force-rebuild every thumbnail of the "'+src+'" tab?\nExisting thumbnails are regenerated from scratch.'))return;
+var btn=document.getElementById('rebuildthumbs');if(btn)btn.disabled=true;
+batchStatus('<span class="spin"></span>Scanning '+esc(src)+'…');
+try{var key=await gcall('thumbs_rebuild',[src]);
+if(!key||(''+key).indexOf('error:')===0)throw new Error(key||'rebuild not started');
+var st=null;
+for(var k=0;k<200000;k++){var raw=await gcall('job_progress',[key]);
+st=(typeof raw==='string')?(function(){try{return JSON.parse(raw);}catch(_){return null;}})():raw;
+if(st){var c=(st.n?(' '+(st.i||0)+'/'+st.n):'');
+batchStatus('<span class="spin"></span>Thumbnails'+c+' — '+esc(st.text||'working…'));
+if(st.done)break;}
+await _sleep(500);}
+var sm=(st&&st.summary)||{};
+batchStatus((st&&st.ok?'✅ ':'⚠️ ')+'Thumbnails: '+(sm.made||0)+' rebuilt · '+(sm.failed||0)+' failed'+
+(sm.total!=null?(' · '+sm.total+' total'):''),(st&&st.ok)?'ok':'err');
+_bust=Date.now();loadSource(src);setTimeout(function(){batchStatus('');},7000);
+}catch(err){batchStatus('⚠️ Rebuild failed: '+esc(''+err),'err');}
 finally{if(btn)btn.disabled=false;}}
 // --- Visionneuse d'exemples (grand format + prompt + navigation) ---
 function exRender(){var x=EX[excur];if(!x)return;exbig.src=encodeURI(x.url);
@@ -261,6 +286,7 @@ if(ev.key==='ArrowRight')document.getElementById('next').click();});
 q.oninput=filter;
 document.getElementById('blurbtn').onclick=()=>document.body.classList.toggle('blur');
 document.getElementById('fetchall').onclick=fetchAll;
+document.getElementById('rebuildthumbs').onclick=rebuildThumbs;
 function _today(){const d=new Date(),m=String(d.getMonth()+1).padStart(2,'0'),da=String(d.getDate()).padStart(2,'0');return d.getFullYear()+'-'+m+'-'+da;}
 // --- Sous-dossiers (sidebar) + hide, persistant en localStorage ---
 let curFolder='',showHidden=false,_folderUserSet=false,curSource='outputs',hidden=new Set();

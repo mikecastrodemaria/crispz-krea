@@ -3,6 +3,31 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.11.0 — 2026-07-15 — "Rebuild ALL thumbnails (force)" button + parallel thumbnail generation
+
+- New **🖼 Rebuild ALL thumbnails (force)** button in the Asset Browser header. It applies
+  to the **tab you are on** — **Models**, **LoRAs** or **Outputs** — and force-regenerates
+  every thumbnail from scratch (useful after a corrupt/partial thumbnail or a
+  `thumbnail_size` change, which the normal "skip if up to date" rule would never redo).
+- Runs **in the background with live progress**, reusing the same job + polling
+  infrastructure as the CivitAI batch: a toast shows **`Thumbnails 42/177 — name`**, then
+  a summary (`X rebuilt · Y failed · Z total`) and the tab reloads.
+- **Thumbnail generation is now parallel** (`ThreadPoolExecutor`, `min(8, cpu)` by
+  default, tunable via `asset_browser.thumb_workers`). PIL releases the GIL while
+  decoding/resizing, so this speeds up the normal background indexing too, not just the
+  new button.
+- **Cache-busting**: rebuilt thumbnails keep the same URL, so the browser would have kept
+  showing the old images — the SPA now appends a token after a rebuild.
+- Defensive: a corrupt source counts as `failed` and the batch continues; a missing
+  folder or a model with no preview yields no job instead of an error.
+- The pre-existing Advanced ▸ Asset Browser "reindex" button (outputs only, synchronous)
+  is unchanged.
+- Files: `cz_assetbrowser.py` (`_ab_gen_thumbs` gains `force`/`progress`/`workers`,
+  new `_thumb_jobs_for` + `rebuild_thumbs`, `_thumb_workers`), `cz_ui.py`
+  (`_api_thumbs_rebuild` + `thumbs_rebuild` endpoint; the job registry and its endpoint
+  are renamed `_BG_JOBS` / `job_progress` since they now serve three job types),
+  `cz_assets.py` (button, handler, cache-buster), `tests/test_thumbs.py`.
+
 ## 1.10.2 — 2026-07-15 — Fix: the model SHA256 is cached (re-runs no longer re-hash the library)
 
 `_compute_sha256` computed the hash but **never stored it**, so every batch pass re-read

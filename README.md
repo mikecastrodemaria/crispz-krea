@@ -81,6 +81,9 @@ SwarmUI. On top of crispz's upscaler it adds:
   trigger words / examples). A **🔄 Fetch all missing** button (LoRAs / Models tabs)
   enriches the whole folder in one go (same as the standalone `civitai_index.bat` /
   `.sh` — see below); models with a **newer version on CivitAI** get a **⚠ update** badge.
+  A **🖼 Rebuild ALL thumbnails (force)** button re-generates every thumbnail of the
+  current tab from scratch (parallel, live progress) — for when a thumbnail is corrupt or
+  you changed `thumbnail_size`.
   Plus a per-session history in the app. The **Output folder** can point
   anywhere (even another drive); a folder typed into the UI at runtime is auto-authorised,
   so the browser opens without a Gradio *"File not allowed"* error. (In `config.txt`, write

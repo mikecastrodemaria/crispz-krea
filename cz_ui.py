@@ -1093,7 +1093,7 @@ def _gallery_delete(path, output_dir, sort="Newest", filt=""):
 # ----------------------------------------------------------------------------
 # Asset Browser (SPA + reindex + thumbnails + delete) -> cz_assetbrowser.py.
 from cz_assetbrowser import (_ab_get, _ab_resolve_dir, ab_reindex, ab_open_fast,  # noqa: E402,F401
-                             ab_build_catalog, delete_asset)
+                             ab_build_catalog, delete_asset, rebuild_thumbs)
 
 
 # Assets statiques (SPA Asset Browser, JS d'interface, CSS) -> cz_assets.py
@@ -1191,16 +1191,16 @@ def _asset_focus_url(kind, name):
 
 # Registre des jobs CivitAI en cours (cle = chemin absolu du .safetensors). Chaque etat:
 # {phase, frac (0..1 ou null), text, done, ok, message}. Ecrit par le thread de fetch,
-# lu par _api_civitai_progress (polling depuis l'Asset Browser).
-_CIVITAI_JOBS = {}
-_CIVITAI_LOCK = threading.Lock()
+# lu par _api_job_progress (polling depuis l'Asset Browser).
+_BG_JOBS = {}
+_BG_LOCK = threading.Lock()
 
 
-def _civitai_job_set(key, **fields):
-    with _CIVITAI_LOCK:
-        st = _CIVITAI_JOBS.get(key) or {}
+def _bg_job_set(key, **fields):
+    with _BG_LOCK:
+        st = _BG_JOBS.get(key) or {}
         st.update(fields)
-        _CIVITAI_JOBS[key] = st
+        _BG_JOBS[key] = st
 
 
 def _api_civitai_fetch(rel, kind):
@@ -1213,11 +1213,11 @@ def _api_civitai_fetch(rel, kind):
         mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
         path = os.path.join(mdir, rel or "")
         key = os.path.abspath(path)
-        _civitai_job_set(key, phase="start", frac=None, text="Starting…",
+        _bg_job_set(key, phase="start", frac=None, text="Starting…",
                          done=False, ok=False, message="")
 
         def _progress(phase, frac, text):
-            _civitai_job_set(key, phase=phase, frac=frac, text=text, done=False)
+            _bg_job_set(key, phase=phase, frac=frac, text=text, done=False)
 
         def _work():
             try:
@@ -1227,12 +1227,12 @@ def _api_civitai_fetch(rel, kind):
                                      cz_pipeline.CHECKPOINTS_DIR)
                 except Exception as e:
                     _dbg(f"catalog rebuild after civitai fetch failed: {e}")
-                _civitai_job_set(key, phase="done", frac=1.0, done=True,
+                _bg_job_set(key, phase="done", frac=1.0, done=True,
                                  ok=bool(res.get("success")),
                                  text=res.get("message", "done"),
                                  message=res.get("message", "done"))
             except Exception as e:
-                _civitai_job_set(key, phase="error", frac=None, done=True, ok=False,
+                _bg_job_set(key, phase="error", frac=None, done=True, ok=False,
                                  text=f"error: {e}", message=f"error: {e}")
 
         threading.Thread(target=_work, daemon=True).start()
@@ -1241,11 +1241,45 @@ def _api_civitai_fetch(rel, kind):
         return f"error: {e}"
 
 
-def _api_civitai_progress(key):
-    """API (Asset Browser): etat courant d'un job CivitAI (JSON). done=true quand fini.
-    Sert aussi bien les jobs par-modele que les jobs batch (memes cles de registre)."""
-    with _CIVITAI_LOCK:
-        st = _CIVITAI_JOBS.get(key)
+def _api_thumbs_rebuild(kind):
+    """API (Asset Browser, bouton 'Rebuild thumbnails'): regenere DE FORCE toutes les
+    miniatures de l'onglet courant (outputs / loras / models), en parallele et en tache
+    de fond. Renvoie une cle de job a interroger via job_progress."""
+    try:
+        kind = (kind or "").strip() or "outputs"
+        key = "__thumbs__:" + kind
+        _bg_job_set(key, phase="start", i=0, n=0, text="Scanning…",
+                    done=False, ok=False, summary=None)
+
+        def _progress(done, total, name):
+            _bg_job_set(key, phase="thumbs", i=done, n=total, done=False,
+                        text=f"{name}")
+
+        def _work():
+            try:
+                _allow_runtime_path(DEFAULT_OUTPUT_DIR)
+                res = rebuild_thumbs(kind, DEFAULT_OUTPUT_DIR,
+                                     loras_dir=cz_pipeline.LORAS_DIR,
+                                     checkpoints_dir=cz_pipeline.CHECKPOINTS_DIR,
+                                     force=True, progress=_progress)
+                _bg_job_set(key, phase="done", done=True, ok=True, summary=res,
+                            text=(f"{res['made']} rebuilt, {res['failed']} failed "
+                                  f"({res['total']} total)"))
+            except Exception as e:
+                _bg_job_set(key, phase="error", done=True, ok=False,
+                            text=f"error: {e}", summary=None)
+
+        threading.Thread(target=_work, daemon=True).start()
+        return key
+    except Exception as e:
+        return f"error: {e}"
+
+
+def _api_job_progress(key):
+    """API (Asset Browser): etat courant d'un job de fond (JSON). done=true quand fini.
+    Sert les 3 types de job: fetch CivitAI par-modele, batch, rebuild des miniatures."""
+    with _BG_LOCK:
+        st = _BG_JOBS.get(key)
         st = dict(st) if st else {"phase": "unknown", "frac": None, "text": "",
                                   "done": True, "ok": False, "message": "no such job"}
     return json.dumps(st)
@@ -1260,11 +1294,11 @@ def _api_civitai_fetch_all(kind):
         import cz_civitai
         kind = (kind or "").strip() or "loras"
         key = "__batch__:" + kind
-        _civitai_job_set(key, phase="start", i=0, n=0, text="Starting…",
+        _bg_job_set(key, phase="start", i=0, n=0, text="Starting…",
                          done=False, ok=False, summary=None)
 
         def _progress(i, n, name, phase, text):
-            _civitai_job_set(key, phase=phase, i=i, n=n, text=text, done=False)
+            _bg_job_set(key, phase=phase, i=i, n=n, text=text, done=False)
 
         def _work():
             try:
@@ -1278,12 +1312,12 @@ def _api_civitai_fetch_all(kind):
                                      cz_pipeline.CHECKPOINTS_DIR)
                 except Exception as e:
                     _dbg(f"catalog rebuild after batch failed: {e}")
-                _civitai_job_set(
+                _bg_job_set(
                     key, phase="done", done=True, ok=True, summary=summary,
                     text=(f"enriched {summary['enriched']}, updated {summary['updated']}, "
                           f"skipped {summary['skipped']}, failed {summary['failed']}"))
             except Exception as e:
-                _civitai_job_set(key, phase="error", done=True, ok=False,
+                _bg_job_set(key, phase="error", done=True, ok=False,
                                  text=f"error: {e}", summary=None)
 
         threading.Thread(target=_work, daemon=True).start()
@@ -2352,12 +2386,17 @@ def build_ui():
         cp_in = gr.Textbox(visible=False)
         cp_out = gr.Textbox(visible=False)
         cp_btn = gr.Button(visible=False)
-        cp_btn.click(_api_civitai_progress, cp_in, cp_out, api_name="civitai_progress")
+        cp_btn.click(_api_job_progress, cp_in, cp_out, api_name="job_progress")
         # Endpoint batch (bouton 'Fetch all missing' de l'Asset Browser)
         cfa_in = gr.Textbox(visible=False)
         cfa_out = gr.Textbox(visible=False)
         cfa_btn = gr.Button(visible=False)
         cfa_btn.click(_api_civitai_fetch_all, cfa_in, cfa_out, api_name="civitai_fetch_all")
+        # Endpoint rebuild des miniatures (bouton 'Rebuild thumbnails' de l'Asset Browser)
+        tr_in = gr.Textbox(visible=False)
+        tr_out = gr.Textbox(visible=False)
+        tr_btn = gr.Button(visible=False)
+        tr_btn.click(_api_thumbs_rebuild, tr_in, tr_out, api_name="thumbs_rebuild")
 
         with gr.Row():
             # ===== Colonne principale (apercu en haut, prompt + Generate, negative, input) =====

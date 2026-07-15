@@ -67,16 +67,69 @@ def _ab_scan(d):
     return out
 
 
-def _ab_gen_thumbs(jobs, size, quality):
-    """Genere une liste de thumbnails (utilise en tache de fond)."""
-    for src, tp in jobs:
+def _thumb_workers():
+    """Nb de threads pour la generation de miniatures. PIL relache le GIL pendant le
+    decodage/redimensionnement -> les threads accelerent vraiment. Config
+    asset_browser.thumb_workers; defaut min(8, cpu)."""
+    cfg = CONFIG.get("asset_browser") or {}
+    try:
+        n = int(cfg.get("thumb_workers") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1:
+        n = min(8, os.cpu_count() or 4)
+    return max(1, n)
+
+
+def _ab_gen_thumbs(jobs, size, quality, force=False, progress=None, workers=None):
+    """Genere une liste de miniatures EN PARALLELE (utilise en tache de fond et par le
+    bouton 'Rebuild thumbnails').
+
+    force=False -> saute une miniature deja a jour (plus recente que la source).
+    force=True  -> regenere tout (miniatures corrompues / changement de taille).
+    progress(done, total, name) est appele apres chaque fichier.
+    Renvoie {total, made, skipped, failed}."""
+    total = len(jobs)
+    res = {"total": total, "made": 0, "skipped": 0, "failed": 0}
+    if not total:
+        return res
+    lock = threading.Lock()
+    done = [0]
+
+    def _one(job):
+        src, tp = job
+        out = "failed"
         try:
-            os.makedirs(os.path.dirname(tp), exist_ok=True)
-            if not (os.path.isfile(tp) and os.path.getmtime(tp) >= os.path.getmtime(src)):
+            if (not force and os.path.isfile(tp)
+                    and os.path.getmtime(tp) >= os.path.getmtime(src)):
+                out = "skipped"
+            else:
+                os.makedirs(os.path.dirname(tp), exist_ok=True)
                 _ab_make_thumb(src, tp, size, quality)
-        except Exception:
-            pass
-    _log(f"asset-browser: {len(jobs)} thumbnail(s) generated (background)")
+                out = "made"
+        except Exception as e:
+            _dbg(f"thumb failed {src}: {e}")
+        with lock:
+            res[out] += 1
+            done[0] += 1
+            d = done[0]
+        if progress:
+            try:
+                progress(d, total, os.path.basename(src))
+            except Exception:
+                pass
+
+    n = workers or _thumb_workers()
+    if n > 1 and total > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            list(ex.map(_one, jobs))
+    else:
+        for j in jobs:
+            _one(j)
+    _log(f"asset-browser: thumbnails {res['made']} generated, {res['skipped']} up-to-date, "
+         f"{res['failed']} failed ({n} worker(s))")
+    return res
 
 
 def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=True,
@@ -233,6 +286,47 @@ def _scan_catalog(model_dir, out_dir, kind):
     if jobs:
         threading.Thread(target=_ab_gen_thumbs, args=(jobs, 256, 85), daemon=True).start()
     return entries
+
+
+def _thumb_jobs_for(kind, output_dir, loras_dir=None, checkpoints_dir=None, size=256):
+    """Liste des (source, destination) de miniatures d'un onglet de l'Asset Browser.
+    kind: 'outputs' | 'loras' | 'models'."""
+    d = _ab_resolve_dir(output_dir)
+    jobs = []
+    if kind == "outputs":
+        for rel, p in _ab_scan(d):
+            jobs.append((p, os.path.join(d, "_index/thumbs/" + os.path.splitext(rel)[0] + ".jpg")))
+        return jobs
+    mdir = loras_dir if kind == "loras" else checkpoints_dir
+    if not mdir or not os.path.isdir(mdir):
+        return jobs
+    for root, dirs, files in os.walk(mdir):
+        dirs[:] = [x for x in dirs if x not in ("_index", ".cache", "recipes")]
+        for f in files:
+            if not f.lower().endswith(".safetensors"):
+                continue
+            fp = os.path.join(root, f)
+            prev = _find_preview(fp)      # pas de preview -> rien a miniaturiser
+            if not prev:
+                continue
+            rel = os.path.relpath(fp, mdir).replace("\\", "/")
+            trel = "_index/thumbs/" + kind + "/" + os.path.splitext(rel)[0] + ".jpg"
+            jobs.append((prev, os.path.join(d, trel)))
+    return jobs
+
+
+def rebuild_thumbs(kind, output_dir, loras_dir=None, checkpoints_dir=None, force=True,
+                   progress=None):
+    """(Re)genere TOUTES les miniatures d'un onglet, en parallele. force=True regenere
+    meme celles deja a jour (miniatures corrompues, taille changee). Renvoie le resume
+    de _ab_gen_thumbs (+ 'kind')."""
+    size = int(_ab_get("thumbnail_size") or 256)
+    quality = int(_ab_get("thumbnail_quality") or 85)
+    jobs = _thumb_jobs_for(kind, output_dir, loras_dir, checkpoints_dir, size)
+    _log(f"asset-browser: rebuilding {len(jobs)} {kind} thumbnail(s) (force={force})")
+    res = _ab_gen_thumbs(jobs, size, quality, force=force, progress=progress)
+    res["kind"] = kind
+    return res
 
 
 def ab_build_catalog(output_dir, loras_dir, checkpoints_dir):
