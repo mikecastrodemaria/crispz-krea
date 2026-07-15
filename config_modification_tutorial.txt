@@ -109,7 +109,16 @@ wildcards_dir           Folder of wildcard .txt files. In the prompt, __name__ i
                         replaced by a random line from <folder>/name.txt (e.g.
                         __color__). Nested wildcards supported, reproducible per
                         seed. Empty -> ./wildcards next to app.py.
-default_lora_weight     Default LoRA strength (0..2).
+default_lora_weight     Default LoRA strength a slot starts at (default 1.0). Clamped
+                        into lora_weight_min..lora_weight_max.
+lora_weight_min         Min/max of the LoRA "Weight" sliders (default -2.0 / 2.0).
+lora_weight_max         NEGATIVE weights are allowed and useful: the LoRA then pushes
+                        AWAY from what it was trained on (a "skinny slider" at -1 gives
+                        the opposite effect). 0 = no effect. Past about +/-1.5 most LoRAs
+                        burn or deform the image. Set lora_weight_min to 0 to forbid
+                        negatives. Bad values or min >= max -> falls back to -2..2.
+lora_slots              Number of LoRA slots shown in Models > LoRA (1..10, default 3).
+                        Each slot = a dropdown + weight; all combine at generation.
 zimage_omni_model       HF repo id OR local diffusers folder of a Z-Image Omni/Edit
                         model (with a SigLIP encoder). REQUIRED for the Reference
                         (Omni) multi-image mode. The Turbo/Base text-to-image models
@@ -126,10 +135,33 @@ faceswap_model_url      Optional URL to auto-download inswapper_128.onnx once (i
                         'faceswap' folder) if the model is not found locally.
 
 default_save_mode       "display" (no save) | "local" | "alongside" | "custom".
-default_output_dir      Folder for "local"/"custom" save modes.
+default_output_dir      Folder for "local"/"custom" save modes. Absolute paths are
+                        allowed (e.g. another drive). WINDOWS PATHS IN JSON: use "/" or
+                        "\\" -- a single "\" is an illegal JSON escape and makes the WHOLE
+                        config.txt fail to load silently (every setting falls back to
+                        config-sample.txt). Right: "E:/images/out" or
+                        "E:\\images\\out". Wrong: "E:\images\out".
+                        Changing the "Output folder" field in the UI at runtime is fine
+                        too: the folder is auto-authorised for the Asset Browser (no more
+                        "File not allowed"), no restart needed.
 default_output_format   "png" | "jpg" | "webp".
+civitai_api_key         Optional CivitAI API token. In the Asset Browser (LoRAs/Models
+                        tabs), "Fetch from CivitAI" looks a model up by its SHA256, then
+                        saves <name>.preview.png + <name>.civitai.json (trigger words +
+                        example images). A key unlocks gated/NSFW previews; most public
+                        models work without one.
 date_subfolders         true (default) -> save into out/YYYY-MM-DD/ subfolders
                         (like Fooocus). The galleries/Asset Browser scan recursively.
+save_pre_upscale        false (default). true -> in txt2img + auto-upscale, ALSO save the
+                        original txt2img image (before ESRGAN/refine), tagged 'txt2img',
+                        next to the final upscaled one. Toggle in Advanced > Generation.
+wildcards_in_order      false (default) -> __name__ picks a RANDOM line (reproducible per
+                        seed). true -> in a batch, image i takes line (i % nb_lines) of the
+                        wildcard file (deterministic sweep). Toggle in Advanced > Generation.
+metadata_scheme         "crispz" (default) | "a1111". a1111 also writes an A1111/Civitai
+                        'parameters' text chunk into PNGs so Civitai reads the prompt +
+                        seed + params. crispz's own chunk + sidecar .json are kept either
+                        way. Switchable live in Advanced > Metadata.
 filename_pattern        Output filename (no extension). Placeholders:
                         {date}  YYYYMMDD-HHMMSS
                         {tag}   upscaled / txt2img / img2img / omni / faceswap (+ source name)
@@ -140,3 +172,34 @@ filename_pattern        Output filename (no extension). Placeholders:
 
 log_level               "quiet" | "info" | "debug". debug = full params/state/VRAM
                         in the console (also: run.bat --debug, or --log-level debug).
+
+hf_token                Hugging Face token for gated models (empty = anonymous).
+caption_model           Local auto-describe model (no Ollama): "blip-large"
+                        (default, richer) | "blip-base" (lighter). Used by the
+                        Describe fallback and Inpaint/Outpaint Auto-describe.
+                        Also selectable in Prompt AI > Caption model (persisted).
+improve_local_keywords  Quality tags appended by "Improve prompt" when no Ollama
+                        model is selected (local rule-based fallback).
+checkpoints_extra_dir   Optional second checkpoints folder, merged into the single
+                        "Z-Image checkpoint" dropdown ("" = disabled).
+
+job_queue               {"enabled": true}
+                        Job queue panel: "+ Queue" snapshots ALL current settings
+                        (incl. model/LoRAs/sampler); "Run queue" chains the jobs;
+                        Stop pauses (remaining jobs kept). enabled=false removes
+                        the panel entirely (no components, zero cost).
+xyz_grid                {"enabled": true, "max_jobs": 100, "thumb": 512,
+                         "suggest": true}
+                        X/Y/Z comparison grid (needs job_queue). Every combo
+                        becomes a queued job; an annotated contact sheet is
+                        assembled per Z value (X columns x Y rows, thumb px cells)
+                        in <output>/xyz_<timestamp>/. max_jobs caps the combo
+                        count. suggest=false disables the contextual value
+                        suggestions (placeholder + fill button).
+tag_autocomplete        {"enabled": true, "max_results": 8, "sources": [urls]}
+                        Prompt/negative autocomplete. CSVs in sources are
+                        downloaded once into tags/ (any .csv dropped there is
+                        also used: "name,category,count,aliases" or one word per
+                        line), merged with your local __wildcards__. Dropdown
+                        under the caret: arrows + Tab/Enter, Escape. enabled=false
+                        downloads nothing and injects no script (zero cost).

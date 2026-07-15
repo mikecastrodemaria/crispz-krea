@@ -18,13 +18,16 @@ handlers UI. Ne depend que de cz_core / cz_esrgan / cz_imageio (jamais de app ni
 
 import os
 import gc
+import sys
 import time
 import json
+import threading
 
 import numpy as np
 import torch
 from PIL import Image
 
+import cz_core
 from cz_core import (
     CONFIG, HERE, DEVICE, DTYPE,
     DEFAULT_TILE, DEFAULT_OVERLAP, DEFAULT_REFINE_TILE, DEFAULT_REFINE_OVERLAP,
@@ -72,6 +75,27 @@ LORAS_DIR = (os.environ.get("LORAS_DIR") or _prefs.get("loras_dir")
 # LoRA actives: liste de (chemin, poids). Plusieurs LoRA combinables (multi-slots).
 LORAS = []
 LORA_WEIGHT = float(CONFIG.get("default_lora_weight", 1.0))  # poids par defaut des slots
+
+
+def _lora_weight_range():
+    """Bornes des curseurs de poids LoRA (config 'lora_weight_min'/'lora_weight_max').
+    Defaut -2..2: les poids NEGATIFS sont valides et utiles (ils inversent l'effet de la
+    LoRA). Defensif: valeurs illisibles ou min >= max -> on retombe sur le defaut."""
+    try:
+        lo = float(CONFIG.get("lora_weight_min", -2.0))
+        hi = float(CONFIG.get("lora_weight_max", 2.0))
+    except (TypeError, ValueError):
+        _log("lora_weight_min/max: not a number, using -2..2")
+        return -2.0, 2.0
+    if lo >= hi:
+        _log(f"lora_weight_min ({lo}) >= lora_weight_max ({hi}), using -2..2")
+        return -2.0, 2.0
+    return lo, hi
+
+
+LORA_WEIGHT_MIN, LORA_WEIGHT_MAX = _lora_weight_range()
+# Le poids par defaut doit rester dans les bornes (sinon le curseur naitrait hors plage).
+LORA_WEIGHT = min(LORA_WEIGHT_MAX, max(LORA_WEIGHT_MIN, LORA_WEIGHT))
 # Modele Omni/Edit (multi-reference). Reglable via config.txt ou l'UI.
 OMNI_MODEL = (os.environ.get("ZIMAGE_OMNI_MODEL") or CONFIG.get("zimage_omni_model") or "").strip()
 
@@ -81,6 +105,9 @@ OMNI_MODEL = (os.environ.get("ZIMAGE_OMNI_MODEL") or CONFIG.get("zimage_omni_mod
 _BASE_PIPE = None
 _DERIVED = {}
 _LOADED_KEY = None
+# LoRA reellement posees sur _BASE_PIPE (liste de (chemin, poids)). Sert a echanger les
+# LoRA a chaud sans recharger le modele: si ca diverge de LORAS, _apply_loras resynchronise.
+_APPLIED_LORAS = []
 
 # Palier 2 (cohabitation VRAM): offload CPU de la passe diffusion. none = tout en VRAM
 # (defaut). model = decharge par sous-module (bon compromis). sequential = plus agressif,
@@ -135,6 +162,25 @@ _PROGRESS = None
 # Stop "facon Fooocus": flag global + interruption des pipelines diffusers. Pose par
 # les handlers via cz_pipeline._STOP = ... et par request_stop().
 _STOP = False
+
+# Gestion du seed (facon Fooocus):
+#  _LAST_SEED         = seed CONCRET du dernier rendu (un -1 aleatoire est resolu en
+#                       valeur reelle) -> bouton "Reuse last seed" + metadonnees justes.
+#  _NO_SEED_INCREMENT = True -> tout un batch utilise le meme seed (pas de +i par image).
+_LAST_SEED = -1
+_NO_SEED_INCREMENT = False
+# True -> en txt2img+upscale, sauve AUSSI l'image txt2img d'origine (avant l'upscale).
+_SAVE_PRE_UPSCALE = bool(CONFIG.get("save_pre_upscale", False))
+
+
+def set_no_seed_increment(v):
+    global _NO_SEED_INCREMENT
+    _NO_SEED_INCREMENT = bool(v)
+
+
+def set_save_pre_upscale(v):
+    global _SAVE_PRE_UPSCALE
+    _SAVE_PRE_UPSCALE = bool(v)
 
 
 def set_guidance(g):
@@ -257,6 +303,69 @@ def _progress(frac, desc=""):
             pass
 
 
+# ---- Feedback de chargement des modeles (terminal + UI) ----
+# from_pretrained est bloquant et silencieux (le 1er chargement telecharge depuis HF ->
+# plusieurs minutes). On execute le chargement dans un thread et on rafraichit toutes les
+# ~2s une ligne terminal + la barre Gradio (temps ecoule + VRAM allouee). Config bloc
+# "load_progress"; enabled=false -> chargement direct (aucun thread, zero cout).
+_LOAD_CFG = CONFIG.get("load_progress") if isinstance(CONFIG.get("load_progress"), dict) else {}
+LOAD_PROGRESS_ENABLED = bool(_LOAD_CFG.get("enabled", True))
+_LOAD_TARGET_GB = float(_LOAD_CFG.get("target_vram_gb", 14.0))
+_LOAD_HEARTBEAT = float(_LOAD_CFG.get("heartbeat_s", 2.0))
+
+
+def _fmt_load(label, elapsed, vram_gb):
+    """Texte de progression de chargement (pur, testable). VRAM > 0 -> phase chargement
+    en memoire; sinon phase download/lecture disque."""
+    if vram_gb > 0.05:
+        return f"{label}... {elapsed:.0f}s | {vram_gb:.1f} GB in VRAM"
+    return f"{label}... {elapsed:.0f}s (downloading / reading, first run only)"
+
+
+def _load_pct(elapsed, vram_gb, target_gb=None):
+    """% honnete: base sur la VRAM allouee / cible une fois le chargement en memoire
+    commence (plafonne 0.95); pendant le download (VRAM~0) petite barre temporelle."""
+    target_gb = target_gb or _LOAD_TARGET_GB
+    if vram_gb <= 0.05:
+        return min(0.12, elapsed / 600.0)
+    return min(0.95, vram_gb / max(1.0, float(target_gb)))
+
+
+def _load_monitor(label, fn):
+    """Execute fn() (chargement bloquant) dans un thread et rafraichit terminal + UI
+    (temps + VRAM) toutes les ~2s. Renvoie le resultat de fn (releve son exception)."""
+    if not LOAD_PROGRESS_ENABLED:
+        return fn()
+    box = {}
+
+    def _work():
+        try:
+            box["v"] = fn()
+        except BaseException as e:   # noqa: BLE001 - on re-leve dans le thread principal
+            box["e"] = e
+
+    th = threading.Thread(target=_work, daemon=True)
+    t0 = time.time()
+    th.start()
+    while True:
+        th.join(timeout=_LOAD_HEARTBEAT)
+        el = time.time() - t0
+        vram = (torch.cuda.memory_allocated() / 1024 ** 3) if DEVICE == "cuda" else 0.0
+        line = _fmt_load(label, el, vram)
+        if cz_core.LOG_LEVEL >= 1:
+            sys.stderr.write("\r[crispz][load] " + line + "        ")
+            sys.stderr.flush()
+        _progress(_load_pct(el, vram), "Loading " + line)
+        if not th.is_alive():
+            break
+    if cz_core.LOG_LEVEL >= 1:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
 def request_stop():
     """Demande l'arret: stoppe la boucle de debruitage en cours (pipe._interrupt) et
     les boucles batch/tuiles (_STOP). Quasi-immediat (s'arrete au pas suivant)."""
@@ -275,31 +384,35 @@ def request_stop():
 
 
 def set_zimage_model(repo_or_path):
-    """Change le modele Z-Image. Un repo HF / dossier diffusers -> BASE_REPO.
-    Un fichier single-file (.safetensors Civitai) -> transformer override.
-    Invalide le pipe si change."""
+    """Change le modele Flux. Un repo HF / dossier diffusers -> BASE_REPO.
+    Un fichier single-file (.safetensors Civitai, .gguf) -> transformer override."""
     global BASE_REPO, ZIMAGE_TRANSFORMER
     if not repo_or_path:
         return
     if _is_single_file(repo_or_path):
+        # Changement de transformer seul: PAS de free_vram -> _ensure_base echangera
+        # uniquement le transformer (VAE + encodeurs CLIP/T5 gardes en VRAM).
         if repo_or_path != ZIMAGE_TRANSFORMER:
             ZIMAGE_TRANSFORMER = repo_or_path
-            free_vram()
-            _log("Z-Image transformer (single-file) changed -> will reload")
+            _log("Flux transformer (single-file) changed -> transformer swap on next run")
     elif repo_or_path != BASE_REPO:
+        # Le repo de base change: VAE/encodeurs/tokenizer changent aussi -> reload complet.
         BASE_REPO = repo_or_path
         free_vram()
-        _log("Z-Image base repo changed -> will reload")
+        _log("Flux base repo changed -> will reload")
 
 
 def set_zimage_transformer(path):
-    """Definit (ou enleve avec '' / None) le transformer single-file."""
+    """Definit (ou enleve avec '' / None) le transformer single-file.
+
+    NE libere PAS le pipeline: a repo de base identique, _ensure_base ne rechargera que
+    le transformer (_swap_transformer) et gardera VAE + encodeurs CLIP/T5 en VRAM."""
     global ZIMAGE_TRANSFORMER
     path = path or None
     if path != ZIMAGE_TRANSFORMER:
         ZIMAGE_TRANSFORMER = path
-        free_vram()
-        _log(f"Z-Image transformer -> {path or '(repo de base)'} -> will reload")
+        _log(f"Flux transformer -> {path or '(repo de base)'} "
+             "-> transformer swap on next run (base components kept)")
 
 
 def _safetensors_is_fp8(path):
@@ -447,7 +560,10 @@ def lora_keywords(path):
 
 def set_loras(slots):
     """Definit les LoRA actives. slots = liste de (nom_ou_None, poids). Resout les
-    noms en chemins, ignore les None. Invalide le pipe si la combinaison change."""
+    noms en chemins, ignore les None.
+
+    NE recharge PAS le modele: les LoRA sont echangees A CHAUD sur le transformer deja
+    en VRAM (_apply_loras, appele par _ensure_base au run suivant)."""
     global LORAS
     new = []
     for name, weight in slots:
@@ -456,9 +572,8 @@ def set_loras(slots):
             new.append((p, float(weight)))
     if new != LORAS:
         LORAS = new
-        free_vram()
         _log("LoRAs -> " + (", ".join(f"{os.path.basename(p)}@{w}" for p, w in new) or "(none)")
-             + " -> will reload")
+             + " -> applied on next run (hot-swap, no model reload)")
 
 
 def set_omni_model(repo):
@@ -492,10 +607,11 @@ def set_offload_mode(mode):
 def free_vram():
     """Libere le pipeline de base + les pipelines derives et rend la VRAM
     (palier 3: unload sur inactivite ou endpoint /unload). Rechargement paresseux."""
-    global _BASE_PIPE, _DERIVED, _LOADED_KEY
+    global _BASE_PIPE, _DERIVED, _LOADED_KEY, _APPLIED_LORAS
     _BASE_PIPE = None
     _DERIVED = {}
     _LOADED_KEY = None
+    _APPLIED_LORAS = []      # plus de pipe -> plus d'adaptateur pose
     gc.collect()
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
@@ -566,49 +682,214 @@ def _vram_str():
 # FLUX.1 Krea (diffusers, BF16) : un pipeline "base" txt2img qui detient les composants,
 # img2img / inpaint derives via from_pipe (poids partages, pas de VRAM en double).
 # ----------------------------------------------------------------------------
-def _ensure_base():
-    """Charge (si besoin) le pipeline de base txt2img. Gere le transformer
-    single-file (Civitai/Flux) et l'offload. Cache par (repo, transformer, offload)."""
-    global _BASE_PIPE, _DERIVED, _LOADED_KEY, _BASE_SCHED_CONFIG
-    key = (BASE_REPO, ZIMAGE_TRANSFORMER, OFFLOAD_MODE, tuple(LORAS))
-    _dbg(f"_ensure_base key={key} cached={_LOADED_KEY}")
-    if _BASE_PIPE is not None and _LOADED_KEY == key:
-        _dbg("base pipeline: reusing cached (no reload)")
-        return _BASE_PIPE
-    if _BASE_PIPE is not None:
-        _dbg("base pipeline: key changed -> free + reload")
-        free_vram()
-    from diffusers import FluxPipeline, FluxTransformer2DModel
-    t0 = time.time()
-    kwargs = {}
+def _is_gguf_path(p):
+    return bool(p) and str(p).lower().endswith(".gguf")
+
+
+def _effective_offload(tpath=None):
+    """Offload REELLEMENT applique. Un transformer GGUF quantifie ne se deplace pas sur le
+    GPU via .to(cuda) ni en sequential -> seul enable_model_cpu_offload le pose sur le GPU
+    pendant le forward. On force donc 'model' pour un base GGUF, quel que soit le reglage."""
+    off = OFFLOAD_MODE
+    t = ZIMAGE_TRANSFORMER if tpath is None else tpath
+    if DEVICE == "cuda" and _is_gguf_path(t) and off != "model":
+        off = "model"
+    return off
+
+
+def _load_transformer():
+    """Charge UNIQUEMENT le transformer courant (sans le reste du pipeline):
+      - GGUF quantifie -> from_single_file + GGUFQuantizationConfig (archi = repo de base)
+      - single-file .safetensors -> from_single_file
+      - repo HF / dossier diffusers -> sous-dossier 'transformer'
+      - pas d'override -> transformer du repo de base
+    Utilise au chargement complet ET pour l'echange a chaud (_swap_transformer)."""
+    from diffusers import FluxTransformer2DModel
     if ZIMAGE_TRANSFORMER:
         if _is_single_file(ZIMAGE_TRANSFORMER):
-            if ZIMAGE_TRANSFORMER.lower().endswith(".gguf"):
+            if _is_gguf_path(ZIMAGE_TRANSFORMER):
                 # transformer Flux GGUF (quantifie) -> tient en VRAM, rapide. Le VAE +
                 # encodeurs CLIP/T5 viennent quand meme du repo de base (gated pour Krea).
                 from diffusers import GGUFQuantizationConfig
                 _log(f"loading Flux transformer (GGUF, quantized): {ZIMAGE_TRANSFORMER} ...")
                 # config/subfolder = archi du transformer depuis le repo de base (cache),
                 # sinon from_single_file ne sait pas la structure et tente un repo par defaut.
-                kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
-                    ZIMAGE_TRANSFORMER,
-                    quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
-                    config=BASE_REPO, subfolder="transformer",
-                    torch_dtype=DTYPE)
+                return _load_monitor(
+                    f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)} (GGUF)",
+                    lambda: FluxTransformer2DModel.from_single_file(
+                        ZIMAGE_TRANSFORMER,
+                        quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
+                        config=BASE_REPO, subfolder="transformer",
+                        torch_dtype=DTYPE))
+            # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
+            # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
+            _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
+            return _load_monitor(
+                f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)}",
+                lambda: FluxTransformer2DModel.from_single_file(
+                    ZIMAGE_TRANSFORMER, torch_dtype=DTYPE))
+        # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'.
+        _log(f"loading Flux transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
+        return _load_monitor(
+            f"transformer {ZIMAGE_TRANSFORMER}",
+            lambda: FluxTransformer2DModel.from_pretrained(
+                ZIMAGE_TRANSFORMER, subfolder="transformer", torch_dtype=DTYPE))
+    _log(f"loading Flux transformer (base repo): {BASE_REPO} ...")
+    return _load_monitor(
+        f"transformer {BASE_REPO}",
+        lambda: FluxTransformer2DModel.from_pretrained(
+            BASE_REPO, subfolder="transformer", torch_dtype=DTYPE))
+
+
+def _lora_names(loras):
+    return [f"cz_lora_{i}" for i in range(len(loras))]
+
+
+def _apply_loras(pipe, force=False):
+    """Synchronise les adaptateurs LoRA du pipe avec LORAS, SANS recharger le modele.
+
+    Le transformer reste en VRAM; seuls les adaptateurs PEFT bougent:
+      - memes fichiers, poids differents -> set_adapters (immediat)
+      - jeu de LoRA different            -> unload_lora_weights + reload des LoRA (~1s)
+    Les pipes derives (from_pipe) partagent ce transformer -> ils suivent automatiquement.
+    Renvoie True si applique, False si echec (le caller retombe sur un reload complet)."""
+    global _APPLIED_LORAS
+    if not force and _APPLIED_LORAS == LORAS:
+        return True
+    old_paths = [p for p, _ in _APPLIED_LORAS]
+    new_paths = [p for p, _ in LORAS]
+    try:
+        if not force and old_paths and old_paths == new_paths:
+            # Seuls les poids changent -> re-ponderation instantanee.
+            pipe.set_adapters(_lora_names(LORAS), [float(w) for _, w in LORAS])
+            _APPLIED_LORAS = list(LORAS)
+            _log("LoRA weights updated in place (no reload): "
+                 + ", ".join(f"{os.path.basename(p)}@{w}" for p, w in LORAS))
+            return True
+        if old_paths or force:
+            try:
+                pipe.unload_lora_weights()
+            except Exception as e:
+                _dbg(f"unload_lora_weights: {e}")
+        names, weights = [], []
+        for i, (p, w) in enumerate(LORAS):
+            if os.path.isfile(p):
+                an = f"cz_lora_{i}"
+                _log(f"applying LoRA: {os.path.basename(p)} (weight {w})")
+                # Passer le dossier + weight_name (et non le chemin complet) : sinon
+                # diffusers en mode offline (HF_HUB_OFFLINE) refuse "must specify a
+                # weight_name". Marche aussi online et avec un fichier local direct.
+                pipe.load_lora_weights(os.path.dirname(p) or ".",
+                                       weight_name=os.path.basename(p), adapter_name=an)
+                names.append(an)
+                weights.append(float(w))
             else:
-                # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
-                # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
-                _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
-                kwargs["transformer"] = FluxTransformer2DModel.from_single_file(
-                    ZIMAGE_TRANSFORMER, torch_dtype=DTYPE)
-        else:
-            # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'.
-            _log(f"loading Flux transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
-            kwargs["transformer"] = FluxTransformer2DModel.from_pretrained(
-                ZIMAGE_TRANSFORMER, subfolder="transformer", torch_dtype=DTYPE)
+                _log(f"LoRA file not found, ignored: {p}")
+        if names:
+            pipe.set_adapters(names, weights)
+        _APPLIED_LORAS = list(LORAS)
+        if not force:
+            _log("LoRAs hot-swapped (no model reload)")
+        return True
+    except Exception as e:
+        _log(f"LoRA hot-swap failed ({e}); falling back to a full reload")
+        _APPLIED_LORAS = []
+        return False
+
+
+def _swap_transformer(pipe):
+    """Remplace SEULEMENT le transformer du pipeline deja en cache: le VAE, les encodeurs
+    CLIP/T5, le tokenizer et le scheduler restent en VRAM (c'est eux le gros du temps de
+    chargement). Valable uniquement a repo de base + offload EFFECTIF identiques.
+
+    Renvoie True si l'echange a reussi, False -> le caller fait un reload complet."""
+    global _APPLIED_LORAS, _DERIVED
+    t0 = time.time()
+    old_t = _LOADED_KEY[1] if _LOADED_KEY else None
+    # Passer de/vers un GGUF change l'offload EFFECTIF (un GGUF impose 'model') -> les
+    # hooks accelerate et le placement different: on ne bricole pas, on recharge.
+    if _effective_offload(old_t) != _effective_offload(ZIMAGE_TRANSFORMER):
+        _log("transformer swap skipped (GGUF changes the effective offload) -> full reload")
+        return False
+    try:
+        _log(f"switching Flux transformer -> {ZIMAGE_TRANSFORMER or BASE_REPO} "
+             "(keeping VAE + text encoders in VRAM)")
+        new_t = _load_transformer()
+        old = getattr(pipe, "transformer", None)
+        off = _effective_offload()
+        # Offload: les hooks accelerate sont poses sur les composants. Il faut les retirer
+        # avant l'echange, sinon le nouveau transformer n'en a pas et l'ancien garde les siens.
+        if DEVICE == "cuda" and off in ("model", "sequential"):
+            try:
+                pipe.remove_all_hooks()
+            except Exception as e:
+                _dbg(f"remove_all_hooks: {e}")
+        try:
+            pipe.register_modules(transformer=new_t)   # API diffusers (met a jour le config)
+        except Exception:
+            pipe.transformer = new_t
+        if DEVICE == "cuda":
+            if off == "model":
+                pipe.enable_model_cpu_offload()
+            elif off == "sequential":
+                pipe.enable_sequential_cpu_offload()
+            else:
+                new_t.to(DEVICE)       # jamais un GGUF ici (offload force a 'model')
+        del old
+        gc.collect()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        # Les pipes derives (from_pipe) pointaient sur l'ANCIEN transformer -> a reconstruire
+        # (from_pipe est gratuit: il partage les poids, il ne recharge rien).
+        _DERIVED = {}
+        # Les adaptateurs LoRA etaient poses sur l'ancien transformer -> a reposer.
+        _APPLIED_LORAS = []
+        if LORAS:
+            _apply_loras(pipe, force=True)
+        _log(f"transformer switched in {time.time() - t0:.1f}s "
+             "(VAE + text encoders kept, no full reload)")
+        return True
+    except Exception as e:
+        _log(f"transformer hot-swap failed ({e}); falling back to a full reload")
+        _APPLIED_LORAS = []
+        return False
+
+
+def _ensure_base():
+    """Charge (si besoin) le pipeline de base txt2img. Gere le transformer
+    single-file (Civitai/Flux/GGUF) et l'offload. Cache par (repo, transformer, offload).
+
+    Deux echanges a chaud evitent un rechargement complet (transformer + VAE + encodeurs
+    CLIP/T5, des dizaines de secondes):
+      - LoRA differentes            -> _apply_loras (adaptateurs PEFT seuls)
+      - transformer different, meme repo de base + offload -> _swap_transformer."""
+    global _BASE_PIPE, _DERIVED, _LOADED_KEY, _BASE_SCHED_CONFIG, _APPLIED_LORAS
+    key = (BASE_REPO, ZIMAGE_TRANSFORMER, OFFLOAD_MODE)
+    _dbg(f"_ensure_base key={key} cached={_LOADED_KEY}")
+    if _BASE_PIPE is not None and _LOADED_KEY == key:
+        if _apply_loras(_BASE_PIPE):
+            _dbg("base pipeline: reusing cached (no reload)")
+            return _BASE_PIPE
+        _dbg("base pipeline: LoRA hot-swap failed -> free + reload")
+        free_vram()
+    elif _BASE_PIPE is not None:
+        # Seul le transformer change (meme repo de base + meme offload) ? -> on ne recharge
+        # QUE le transformer et on garde VAE + encodeurs CLIP/T5 en VRAM.
+        if (_LOADED_KEY and _LOADED_KEY[0] == BASE_REPO and _LOADED_KEY[2] == OFFLOAD_MODE
+                and _swap_transformer(_BASE_PIPE)):
+            _LOADED_KEY = key
+            return _BASE_PIPE
+        _dbg("base pipeline: key changed -> free + reload")
+        free_vram()
+    from diffusers import FluxPipeline
+    t0 = time.time()
+    kwargs = {}
+    if ZIMAGE_TRANSFORMER:
+        kwargs["transformer"] = _load_transformer()
     _log(f"loading FLUX.1 Krea base: {BASE_REPO} (offload={OFFLOAD_MODE}, dtype=bf16) ... "
          "repo GATED: needs HF login (HF_TOKEN) on first download, then cached")
-    pipe = FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs)
+    pipe = _load_monitor(f"FLUX.1 Krea base {BASE_REPO}",
+                         lambda: FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs))
     # Capture le config natif (flow-matching) du scheduler -> base pour construire les
     # autres samplers (euler/dpm2a/dpmpp2m) sans perdre shift/flow params.
     try:
@@ -616,24 +897,10 @@ def _ensure_base():
     except Exception:
         _BASE_SCHED_CONFIG = None
     # LoRA Flux (sur le transformer du base -> partage par les pipes derives).
+    # force=True: pipe neuf, aucun adaptateur pose -> on (re)pose tout.
+    _APPLIED_LORAS = []
     if LORAS:
-        try:
-            names, weights = [], []
-            for i, (p, w) in enumerate(LORAS):
-                if os.path.isfile(p):
-                    an = f"cz_lora_{i}"
-                    _log(f"applying LoRA: {os.path.basename(p)} (weight {w})")
-                    # Passer le dossier + weight_name (et non le chemin complet) : sinon
-                    # diffusers en mode offline (HF_HUB_OFFLINE) refuse "must specify a
-                    # weight_name". Marche aussi online et avec un fichier local direct.
-                    pipe.load_lora_weights(os.path.dirname(p) or ".",
-                                           weight_name=os.path.basename(p), adapter_name=an)
-                    names.append(an)
-                    weights.append(float(w))
-            if names:
-                pipe.set_adapters(names, weights)
-        except Exception as e:
-            _log(f"LoRA load failed ({e}); continuing without LoRA")
+        _apply_loras(pipe, force=True)
     # Attention slicing: POSE PAR APPEL via _set_slicing (selon la resolution traitee),
     # PAS au chargement. En tuile/1024 -> slicing OFF = attention SDPA native, rapide
     # (comme ComfyUI). Whole-image 2K+ -> slicing ON pour eviter le spill VRAM 32 Go.
@@ -642,12 +909,10 @@ def _ensure_base():
     # (offload=none) ni en sequential -> il reste sur CPU = ULTRA lent (VRAM vide, ~500s/step).
     # Seul enable_model_cpu_offload (accelerate) le pose sur le GPU pendant le forward. On
     # force donc 'model' pour un base GGUF, quel que soit le reglage UI/config.
-    _off = OFFLOAD_MODE
-    _is_gguf = bool(ZIMAGE_TRANSFORMER) and ZIMAGE_TRANSFORMER.lower().endswith(".gguf")
-    if DEVICE == "cuda" and _is_gguf and _off != "model":
-        _log(f"GGUF base: offload '{_off}' force a 'model' (un GGUF ne tourne pas sur GPU "
-             f"en none/sequential -> sinon CPU, ~500s/step)")
-        _off = "model"
+    _off = _effective_offload()
+    if _off != OFFLOAD_MODE:
+        _log(f"GGUF base: offload '{OFFLOAD_MODE}' force a '{_off}' (un GGUF ne tourne pas "
+             f"sur GPU en none/sequential -> sinon CPU, ~500s/step)")
     if DEVICE == "cuda" and _off == "model":
         pipe.enable_model_cpu_offload()
     elif DEVICE == "cuda" and _off == "sequential":

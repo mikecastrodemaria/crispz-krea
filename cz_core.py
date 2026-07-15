@@ -18,7 +18,7 @@ la valeur a jour. _log/_dbg lisent la valeur vive ici, donc les importer est san
 import os
 
 # Force protobuf's pure-Python backend AVANT tout import de transformers/sentencepiece.
-# Sinon le tokenizer T5 (FLUX) / sentencepiece plante: "Descriptors cannot be created
+# Sinon le tokenizer (Qwen3 / T5 / sentencepiece) plante: "Descriptors cannot be created
 # directly" (pb2 genere avec un vieux protoc, incompatible avec protobuf >=3.20 en C++).
 # setdefault: ne surcharge pas un reglage explicite de l'utilisateur.
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
@@ -30,6 +30,9 @@ import base64
 
 import torch
 from PIL import Image
+
+# Version de l'application (affichee dans le titre; entrees CHANGELOG.md par version).
+APP_VERSION = "1.11.0"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PREFS_PATH = os.path.join(HERE, "preferences.json")
@@ -210,15 +213,58 @@ def set_log_level(level):
     return f"Log level: {name}"
 
 
-def _log(msg, level=1):
+def _log(msg, level=1, mod=None):
+    """Log console. mod (optionnel) = prefixe de module, ex. _log('...', mod='queue')
+    -> '[crispz][queue] ...'."""
     if LOG_LEVEL >= level:
-        print(f"[crispz] {msg}", file=sys.stderr, flush=True)
+        tag = f"[crispz][{mod}]" if mod else "[crispz]"
+        print(f"{tag} {msg}", file=sys.stderr, flush=True)
 
 
 def _dbg(msg):
     """Log niveau debug (visible seulement en LOG_LEVEL >= 2)."""
     if LOG_LEVEL >= 2:
         print(f"[crispz][dbg] {msg}", file=sys.stderr, flush=True)
+
+
+def download_with_progress(url, dst, label=None, block=65536, timeout=30):
+    """Telechargement ATOMIQUE (ecrit dst.tmp puis os.replace -> jamais de fichier
+    tronque servi) avec progression reecrite sur une ligne:
+    'fichier: 2.1/4.3 MB (48%)'. Leve en cas d'echec (tmp nettoye). Stdlib seulement."""
+    import urllib.request
+    label = label or os.path.basename(dst)
+    tmp = dst + ".tmp"
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "crispz-studio"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = r.read(block)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if LOG_LEVEL >= 1:
+                    if total:
+                        sys.stderr.write(f"\r{label}: {got / 1e6:.1f}/{total / 1e6:.1f} MB "
+                                         f"({100 * got // total}%)")
+                    else:
+                        sys.stderr.write(f"\r{label}: {got / 1e6:.1f} MB")
+                    sys.stderr.flush()
+        if LOG_LEVEL >= 1:
+            sys.stderr.write("\n")
+        os.replace(tmp, dst)
+        return dst
+    except Exception:
+        if LOG_LEVEL >= 1:
+            sys.stderr.write("\n")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _pil_to_b64_jpeg(img, max_side=1600, quality=85):
