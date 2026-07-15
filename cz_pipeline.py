@@ -432,6 +432,60 @@ def _safetensors_is_fp8(path):
     return False
 
 
+# Architecture attendue dans les .gguf. Un GGUF de diffusion declare son archi dans
+# 'general.architecture': 'flux' (city96 FLUX.1 dev/schnell/krea), 'qwen_image',
+# 'krea2' (Krea 2 = architecture PROPRE, non-Flux, qui exige ComfyUI + son encodeur/VAE),
+# 'llama'/'gemma3'... pour les LLM. On ne charge que 'flux' ici (FluxTransformer2DModel).
+GGUF_ARCH = str(CONFIG.get("gguf_arch") or "flux").strip().lower()
+
+_GGUF_FIXED = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+               6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+
+
+def _gguf_skip(f, t):
+    """Avance le flux au-dela d'une valeur GGUF sans la lire (strings et arrays inclus)."""
+    import struct
+    if t == 8:                                   # string
+        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+        return
+    if t == 9:                                   # array
+        et = struct.unpack("<I", f.read(4))[0]
+        n = struct.unpack("<Q", f.read(8))[0]
+        if et in _GGUF_FIXED:
+            f.seek(struct.calcsize(_GGUF_FIXED[et]) * n, 1)
+        else:
+            for _ in range(n):
+                _gguf_skip(f, et)
+        return
+    f.seek(struct.calcsize(_GGUF_FIXED[t]), 1)
+
+
+def _gguf_arch(path, max_kv=64):
+    """'general.architecture' d'un .gguf -- lit seulement l'en-tete (quelques Ko), jamais
+    les poids. Renvoie 'flux' / 'krea2' / 'qwen_image' / 'llama'... ou None si illisible
+    (dans ce cas on ne filtre pas: mieux vaut tenter que d'ecarter un modele valide)."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            f.seek(4 + 8, 1)                     # version (u32) + tensor_count (u64)
+            nkv = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(min(nkv, max_kv)):
+                kl = struct.unpack("<Q", f.read(8))[0]
+                if kl > 4096:                    # en-tete incoherent -> on abandonne
+                    return None
+                key = f.read(kl).decode("utf-8", "replace")
+                t = struct.unpack("<I", f.read(4))[0]
+                if key == "general.architecture" and t == 8:
+                    n = struct.unpack("<Q", f.read(8))[0]
+                    return f.read(n).decode("utf-8", "replace").strip().lower()
+                _gguf_skip(f, t)
+    except Exception as e:
+        _dbg(f"gguf header read failed {path}: {e}")
+    return None
+
+
 def _checkpoint_dirs():
     """Dossiers a scanner pour les checkpoints single-file: principal + extra (si defini),
     sans doublon de chemin."""
@@ -460,6 +514,14 @@ def list_checkpoints():
                 _log(f"checkpoint skipped (FP8 .safetensors, not loadable by diffusers; "
                      f"use a .gguf quantized version instead): {f}")
                 continue
+            if f.lower().endswith(".gguf"):
+                a = _gguf_arch(os.path.join(d, f))
+                # a=None -> en-tete illisible: on laisse passer (ne pas ecarter a tort).
+                if a and a != GGUF_ARCH:
+                    _log(f"checkpoint skipped (GGUF architecture '{a}', this build only "
+                         f"loads '{GGUF_ARCH}'; that model needs its own pipeline and "
+                         f"text encoder/VAE): {f}")
+                    continue
             seen.add(f)
             out.append(f)
     return sorted(out)
