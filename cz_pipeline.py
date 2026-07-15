@@ -723,11 +723,16 @@ def _load_transformer():
                         torch_dtype=DTYPE))
             # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
             # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
+            # config/subfolder = archi du transformer depuis le repo de base (deja en cache),
+            # comme pour le GGUF: sans ca, from_single_file ne sait pas la structure et va
+            # chercher un repo par defaut (black-forest-labs/FLUX.1-dev) -> echec en mode
+            # offline (HF_HUB_OFFLINE=1, pose par run_quality) et repo inutilement telecharge.
             _log(f"loading Flux transformer (single-file): {ZIMAGE_TRANSFORMER} ...")
             return _load_monitor(
                 f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)}",
                 lambda: FluxTransformer2DModel.from_single_file(
-                    ZIMAGE_TRANSFORMER, torch_dtype=DTYPE))
+                    ZIMAGE_TRANSFORMER, config=BASE_REPO, subfolder="transformer",
+                    torch_dtype=DTYPE))
         # repo HF / dossier diffusers -> charge le sous-dossier 'transformer'.
         _log(f"loading Flux transformer (repo subfolder): {ZIMAGE_TRANSFORMER} ...")
         return _load_monitor(
