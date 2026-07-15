@@ -2,6 +2,9 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
+> Current version: **1.7.1** — see [CHANGELOG.md](CHANGELOG.md).
+
+![crispz-studio — Z-Image creation + enhancement studio](assets/screenshot.png)
 
 A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
@@ -11,6 +14,18 @@ SwarmUI. On top of crispz's upscaler it adds:
   image through the ESRGAN + refine pipeline — no manual step. CLI equivalent:
   `--txt2img --upscale` (see README_CLI.md).
 - **Image → Upscale** (the crispz pipeline): Real-ESRGAN + Z-Image refine, 4K tiling.
+- **Job queue**: `+ Queue` snapshots ALL current settings (incl. model, LoRAs, sampler)
+  into a labeled job list; `Run queue` chains them unattended (overnight batches with
+  different models/settings). **Stop pauses the queue** — remaining jobs are kept. VRAM
+  is purged automatically only when the model changes between jobs.
+- **X/Y/Z grid**: vary 1–3 parameters (checkpoint, sampler, steps, guidance, denoise,
+  ESRGAN model, LoRA weight, Performance preset, Prompt S/R…) — every combo becomes a
+  queued job and the run ends with an **annotated contact sheet** per Z value (X columns ×
+  Y rows) saved in the output folder and shown in the gallery.
+- **Tag autocomplete** in the prompt/negative fields: suggestions as you type from tag
+  CSVs (downloaded once into `tags/`; drop any `.csv` there to add a source) merged with
+  your local `__wildcards__`. Dropdown under the caret, ↑/↓ + Tab/Enter, Escape;
+  popularity-ranked, indexed (~sub-ms per keystroke).
 - **Inpaint / Outpaint** (one tab, 3 modes): **Brush** repaints a painted mask ·
   **Expand sides** outpaints Left/Right/Top/Bottom (+ **Center**) ~30% per side ·
   **Reframe** to a new aspect ratio (**Contain** = keep the whole image and fill the
@@ -24,8 +39,24 @@ SwarmUI. On top of crispz's upscaler it adds:
 - **Models**: one **Z-Image checkpoint** dropdown merging the official base repos
   (Turbo / Z-Image) with single-file `.safetensors` from a main **and** an optional
   extra folder, a **Transformer override** (diffusers repo/folder, e.g. Juggernaut-Z),
-  and **multi-LoRA** (3 slots + trigger words). Picking a model also auto-syncs the
-  Performance preset. FP8 checkpoints are skipped (diffusers can't load them).
+  and **multi-LoRA** (configurable **1–10 slots** + trigger words). Picking a model also
+  auto-syncs the Performance preset. FP8 and INT8/INT4-quantized checkpoints are skipped
+  (diffusers can't load them) - use the BF16/FP16 build.
+- **Presets (Fooocus-style)** (Settings > ⭐ Presets): **save / load / update / delete**
+  presets — a preset bundles prompt, styles, size, steps/CFG, sampler, checkpoint,
+  transformer + LoRAs, and **Load** switches the model/LoRAs too. Stored in `presets/*.json`.
+  A **basic preset is auto-created for every loadable model** (on startup and when you
+  Refresh the checkpoint list) if it doesn't already exist yet — named after the model,
+  with steps/CFG from its profile. Existing presets are never overwritten; skipped
+  FP8/INT8-INT4 models get none.
+- **Seed**: **♻️ Reuse last seed** (refills the real seed of the previous render) + **Fix
+  seed** (no +1 per image). A random `-1` seed is resolved to a concrete value so it is
+  actually saved in the metadata.
+- **Advanced tab** — **metadata scheme** (`crispz` / **a1111** for **Civitai** upload
+  compatibility), **read wildcards in order**, **also save pre-upscale image**, live
+  **LoRA-slot count**, and the **Hugging Face token** (gated models).
+- **PNG Info**: drop an image into *Input Image* to read its embedded **prompt + params**
+  (crispz, **A1111/Civitai**, or ComfyUI) and send them to the fields.
 - **Ollama (optional)**: **Describe** (image→prompt), **Improve prompt**, and **Vision
   Mix** (blend several reference images into one prompt). Models unload from VRAM after
   use. Without Ollama, **Describe** uses a local BLIP captioner and **Improve prompt**
@@ -33,10 +64,30 @@ SwarmUI. On top of crispz's upscaler it adds:
 - **Fooocus-style UI**: big contained preview + batch gallery (arrows + fullscreen),
   prompt + Generate + **Stop**, dark theme, Settings (aspect/performance/batch **1–30**),
   **277 styles** (search + hover previews), and a **crop editor** on every image input.
-- **Asset Browser** (output folder gallery): opens **instantly** in a new tab (indexing
-  runs in the background), **defaults to today's date**, shows **placeholder thumbnails**
-  while images load, with metadata (prompt/seed/params), search/day filter, copy, delete,
-  NSFW blur — plus a per-session history.
+- **Asset Browser** (standalone gallery, new tab): opens **instantly** (indexing +
+  thumbnails in the background, shimmer placeholder → real thumbnail); images save into
+  **`out/YYYY-MM-DD/`** date subfolders; a **subfolder sidebar** with counts + per-folder
+  **hide** + a **Hidden** toggle (persisted), **defaults to today**; **metadata keyword
+  search**, per-image copy/delete, NSFW blur; and **Outputs / LoRAs / Models** source tabs
+  (models show a Civitai preview if one sits next to the `.safetensors`, else a placeholder
+  + trigger words). A **🔎 Fetch from CivitAI** button (per model, in its lightbox) looks the
+  model up by **SHA256** and pulls its **preview + trigger words + example images** (saved as
+  `<name>.preview.png` + `<name>.civitai.json`). The fetch shows **live progress** (spinner +
+  bar: real `Hashing… %` when the file must be hashed, then Querying / Downloading) with an
+  inline ✅/⚠️ result. **Example images are clickable** → a full-screen viewer shows each
+  example **large with its generation prompt** (Copy prompt) and **← / →** to browse. A small
+  **🖼️ icon** next to each **LoRA** dropdown and the **Z-Image checkpoint** dropdown
+  (Advanced) opens the Asset Browser **straight to that model's card** (its preview /
+  trigger words / examples). A **🔄 Fetch all missing** button (LoRAs / Models tabs)
+  enriches the whole folder in one go (same as the standalone `civitai_index.bat` /
+  `.sh` — see below); models with a **newer version on CivitAI** get a **⚠ update** badge.
+  A **🖼 Rebuild ALL thumbnails (force)** button re-generates every thumbnail of the
+  current tab from scratch (parallel, live progress) — for when a thumbnail is corrupt or
+  you changed `thumbnail_size`.
+  Plus a per-session history in the app. The **Output folder** can point
+  anywhere (even another drive); a folder typed into the UI at runtime is auto-authorised,
+  so the browser opens without a Gradio *"File not allowed"* error. (In `config.txt`, write
+  Windows paths with `/` or `\\` — a single `\` is an illegal JSON escape.)
 - **Metadata saved** with every image: PNG text chunk + EXIF (jpg/webp) + `.json`
   sidecar — prompt, negative, seed, steps, guidance, size, model, LoRAs, **applied
   style names**, and the **sampler/schedule**. **Dated, unique filenames** (date +
@@ -55,6 +106,7 @@ Tabbed Gradio UI + scriptable CLI + persistent server (`--serve`).
 | Script | What it does |
 |---|---|
 | `run.bat` | Standard local launch (127.0.0.1:7860). |
+| `xyz_example.bat` | Ready-to-run **X/Y/Z grid** CLI example (`xyz_example.bat "your prompt"`) — 2×2 Steps × Guidance, prints the sheet path. Unix: `xyz_example.sh`. |
 | `boot_check_rtx5090.bat` | GPU / venv / torch / models diagnostic, then launch. |
 | `run_quality_rtx5090.bat` | Local launch + RTX-5090 CUDA env. |
 | `run_quality_rtx5090_lan.bat` | **LAN**: listens on `0.0.0.0`, prints your LAN URL. |
@@ -142,6 +194,73 @@ is in place: once a Z-Image Omni/Edit model ships, set it in `config.txt`
 (`"zimage_omni_model": "<HF repo or local diffusers folder>"`) **and restart** —
 the tab appears and multi-reference works. Use **Models → Check Omni availability**
 to see if it has been released.
+
+## Job queue
+
+Queue several generations with different settings and run them unattended.
+
+- **`+ Queue`** (under the prompt area) freezes a complete snapshot: every Generate
+  setting **plus the current model state** (checkpoint/transformer, LoRAs + weights,
+  sampler/schedule). Jobs are self-contained — you can change the model afterwards, each
+  job restores its own. The button shows the pending count.
+- **Job queue panel** (accordion): labeled list, select a job, **Up / Down / Remove /
+  Clear**, then **`Run queue`** to execute in order (normal progress bar, history and
+  file saving as usual).
+- **Stop = pause**: the current job is interrupted, remaining jobs stay queued; press
+  `Run queue` to resume. A failed job logs `[crispz][queue] …` and the queue continues.
+- VRAM purge between jobs happens **only** when the model actually changes (the existing
+  model-cache invalidation does the work — zero cost for same-model series).
+- Config (`config.txt`): `"job_queue": {"enabled": true}`. Set `false` to remove the
+  panel entirely (no components created, zero cost).
+- v1 limits: in-memory queue (cleared on page reload), sequential execution.
+
+## X/Y/Z grid
+
+Compare parameter variations side by side on an annotated contact sheet.
+
+1. Open **X/Y/Z grid** (accordion under the Job queue), pick the **X axis** (and
+   optionally Y and Z) and type the values, comma-separated — quotes protect commas
+   (`"red, bright", blue`). The field's placeholder adapts to the chosen axis, and the
+   **`⤵ suggest`** button pre-fills it (app lists for closed choices, calibration values
+   for numeric axes) — it never overwrites what you already typed.
+2. **Build grid → queue**: every combo becomes a job in the Job queue (validated first:
+   numbers cast, closed lists matched case-insensitively — `uni` resolves to `unipc` —
+   combo count capped by `max_jobs`).
+3. **Run queue**. When the grid has run, one **annotated sheet per Z value** (X in
+   columns, Y in rows, 512 px cells, missing cells drawn as placeholders) is saved under
+   `<output>/xyz_<timestamp>/` and appended to the result gallery. Pause/resume keeps the
+   collected cells, so the final sheet is complete.
+
+Axes: `Checkpoint`, `Sampler`, `Schedule`, `Steps`, `Guidance`, `Seed`, `ESRGAN model`,
+`Factor`, `Denoise`, `Tile`, `Refine tile`, `LoRA weight` (all active LoRAs),
+`Performance` (applies the preset), `Prompt S/R` (first value = search term, then its
+replacements; the term must exist in the prompt).
+
+Config (`config.txt`): `"xyz_grid": {"enabled": true, "max_jobs": 100, "thumb": 512}` —
+requires `job_queue`; `enabled=false` removes the panel entirely.
+
+Also available from the CLI: `--txt2img --xyz "Steps=4,8,12" --xyz "Guidance=0, 3.5"`
+(see README_CLI.md) — same axes and validation, Ctrl+C assembles a partial sheet.
+
+## Tag autocomplete (prompt fields)
+
+Suggestions appear under the caret while typing in the **prompt** and **negative**
+fields (from 2 typed characters in the current comma-delimited token).
+
+- **Keys**: ↑/↓ navigate · **Tab / Enter** insert · **Escape** close · click works too.
+  Inserted tags get underscores replaced by spaces; `__wildcard__` entries are kept
+  verbatim.
+- **Sources**: the CSVs in `tag_autocomplete.sources` are downloaded **once** into
+  `tags/` (atomic, with console progress). Drop any extra `.csv` in `tags/` to add a
+  source — rich format `name,category,count,"alias1,alias2"` or one word per line.
+  Your **wildcards** are merged in as `__name__` entries with top priority. Aliases
+  match too (shown alongside the tag).
+- **Performance**: the index is built once in the browser (popularity sort, dedup,
+  2-char prefix buckets, early exit at `max_results`). Timings are logged in the
+  browser console: `[tagac] ready in N ms` and a rolling per-keystroke average.
+- Config (`config.txt`):
+  `"tag_autocomplete": {"enabled": true, "max_results": 8, "sources": [<urls>]}` —
+  `enabled=false` downloads nothing and injects no script (zero cost).
 
 ## Inpaint / Outpaint (Advanced tab)
 
@@ -276,7 +395,13 @@ What each choice does:
 | a local `.safetensors` | used as the **transformer** (VAE + Qwen3 encoder kept from the current base repo) | from the model profile |
 
 Switching the dropdown automatically syncs **steps, guidance and the Performance
-radio**. The model reloads on the next **Generate**.
+radio**. The change is applied on the next **Generate**.
+
+**Switching between two `.safetensors` (or clearing an override) reloads only the
+transformer** — the VAE, the Qwen3-4B text encoder and the tokenizer stay in VRAM, so it
+takes seconds instead of a full reload. Only picking a **different base repo** reloads
+everything (its VAE/encoder genuinely differ). Same for LoRAs: they are hot-swapped, and
+changing just a weight is instant.
 
 Steps:
 
@@ -304,8 +429,9 @@ Juggernaut-Z is a **Z-Image Base** fine-tune → set **Performance = "Base CFG"*
 
 **Gotchas**
 
-- Checkpoints must be **BF16/FP16**. FP8 / GGUF / SVDQ (ComfyUI) variants do **not**
-  load in diffusers.
+- Checkpoints must be **BF16/FP16**. FP8 / INT8-INT4 / GGUF / SVDQ (ComfyUI) variants
+  do **not** load in diffusers and are **auto-hidden** from the checkpoint list (a line
+  is logged: `checkpoint skipped (FP8 | INT8/INT4 quantized, ...)`). Pick the BF16 build.
 - If the checkpoint is a **Z-Image Base** model (not Turbo), set **Performance →
   "Base CFG (28 steps)"** (guidance ~4, more steps), otherwise the result is flat.
 - Verify what loaded with `run.bat --debug`:
@@ -322,8 +448,12 @@ Juggernaut-Z is a **Z-Image Base** fine-tune → set **Performance = "Base CFG"*
 ### LoRA (up to 3, combinable)
 
 **Models → LoRA**: set the folder → **Refresh** → pick **up to 3 LoRAs**, each with
-its own **weight**. They are combined (`set_adapters`) on the transformer (shared
-by txt2img/img2img) and reload on the next run. Selecting LoRAs auto-fills their
+its own **weight** (range **`-2..2`**, configurable via `lora_weight_min` /
+`lora_weight_max`). A **negative weight inverts the LoRA's effect** — a "skinny slider"
+LoRA at `-1` pushes the other way; `0` disables it. They are combined (`set_adapters`) on
+the transformer (shared
+by txt2img/img2img) and applied on the next run **without reloading the model** —
+changing a weight is instant, swapping LoRA files takes ~1 s. Selecting LoRAs auto-fills their
 merged **keywords / trigger words** (read from the file metadata); **Add to prompt**
 appends them.
 
@@ -473,6 +603,14 @@ A few useful picks:
 No file to provide: on first launch, `diffusers` fetches the Z-Image transformer,
 the VAE and the Qwen3-4B text encoder from Hugging Face, then everything is cached
 locally. Subsequent runs are offline.
+
+**Loading progress** — because the first load downloads several GB and then reads them
+into VRAM, it can take minutes. The terminal shows a live one-line status
+(`[crispz][load] Z-Image base... 45s | 3.2 GB in VRAM`, or `... (downloading / reading,
+first run only)` before allocation starts) and the UI progress bar advances with it.
+Turn it off or tune it in `config.txt`:
+`"load_progress": {"enabled": true, "target_vram_gb": 14.0, "heartbeat_s": 2.0}`
+(`enabled: false` loads directly with no monitor thread).
 
 ---
 

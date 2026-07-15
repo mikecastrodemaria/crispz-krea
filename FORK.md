@@ -22,10 +22,38 @@ Tout le reste (`cz_ui`, `cz_face`, `cz_esrgan`, `cz_ollama`, styles, CLI) est **
 
 ```
 git fetch upstream
-git merge upstream/main      # seuls les conflits attendus sont dans cz_pipeline.py
+git merge upstream/main
 ```
 
 `upstream` = crispz-studio (Z-Image). `origin` = ce fork.
+
+**Conflits attendus : 4 fichiers** (pas seulement `cz_pipeline.py`). Règle de résolution :
+
+| Fichier | Résolution | Delta fork à préserver |
+|---|---|---|
+| `cz_pipeline.py` | **ours** (couche modèle FLUX) + porter à la main les améliorations génériques d'upstream | tout le loader Flux/GGUF |
+| `cz_ui.py` | **theirs** (upstream) + réappliquer le delta fork | `ZIMAGE_BASE_REPOS`, `ZIMAGE_BASE_PERFORMANCE`, libellés « FLUX … » |
+| `cz_core.py` | **theirs** + réappliquer | `DEFAULT_BASE_REPO`, `MODEL_PROFILES`/`DEFAULT_MODEL_PROFILE`, `.gguf` dans `_is_single_file` |
+| `config-sample.txt` | **theirs** + réappliquer | presets/profils Krea, `default_*`, `flux_true_cfg` |
+
+### Ce qui se porte depuis upstream vers `cz_pipeline.py` (générique)
+
+`_load_monitor`/`_fmt_load`/`_load_pct` (progression de chargement), `_apply_loras` +
+`_APPLIED_LORAS` (hot-swap LoRA PEFT — `set_loras` ne doit **pas** appeler `free_vram`),
+`_lora_weight_range` + `LORA_WEIGHT_MIN/MAX`, `_swap_transformer`/`_load_transformer`
+(recharger le transformer seul), `_LAST_SEED`/`_NO_SEED_INCREMENT`/`_SAVE_PRE_UPSCALE`
++ leurs setters (requis par `cz_ui`).
+
+### Ce qui NE se porte PAS (spécifique Z-Image)
+
+`round_to_multiple(x, m=32)` → **Flux reste en `m=16`** (VAE 8 × patch 2). Idem le snap /32
+de `_refine_whole`, et tout import `ZImagePipeline`/`ZImageTransformer2DModel`.
+
+### Après merge, vérifier
+
+Contrat d'API (`cz_ui`/`cz_cli` importent tout ce que `cz_pipeline` doit exposer),
+`cz_ui.build_ui()` headless, `round_to_multiple(100) == 96`, defaults Krea intacts,
+`tests/` (surtout `test_lora_hotswap`, `test_load`, `test_model_swap`).
 
 ## État
 

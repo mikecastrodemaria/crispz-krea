@@ -22,6 +22,7 @@ warnings.filterwarnings(
     "ignore", category=DeprecationWarning,
     message=r"The '(theme|css|js)' parameter in the Blocks constructor will be removed")
 import base64
+import csv
 import glob
 import time
 import uuid
@@ -47,6 +48,7 @@ except Exception:
 # Fondation (config, chemins, defauts, logging, device) -> cz_core.py
 import cz_core
 from cz_core import (  # noqa: E402,F401
+    APP_VERSION,
     HERE, PREFS_PATH, CONFIG_PATH, CONFIG_SAMPLE_PATH,
     DEFAULT_MODEL, DEFAULT_FACTOR, DEFAULT_DENOISE, DEFAULT_STEPS, DEFAULT_TILE,
     DEFAULT_OVERLAP, DEFAULT_REFINE_TILE, DEFAULT_REFINE_OVERLAP, DEFAULT_SAVE_MODE,
@@ -109,7 +111,7 @@ PERFORMANCE = {
 import cz_prompt
 from cz_prompt import (  # noqa: E402,F401
     STYLES, _seed_rng, list_wildcards, _apply_wildcards, _pick_styles, _apply_styles,
-    set_wildcards_dir,
+    set_wildcards_dir, set_wildcards_in_order,
 )
 
 # Real-ESRGAN (spandrel) + upscale tuile/overlap-add -> cz_esrgan.py. L'etat mutable
@@ -219,6 +221,7 @@ if isinstance(CONFIG.get("performance_presets"), dict) and CONFIG["performance_p
 # stop/progress + generation/orchestration. app lit l'etat via cz_pipeline.NAME et
 # pose cz_pipeline._PROGRESS / cz_pipeline._STOP depuis les handlers UI.
 import cz_pipeline
+import cz_civitai
 from cz_pipeline import (  # noqa: E402,F401
     set_guidance, request_stop, set_zimage_model, set_zimage_transformer,
     list_checkpoints, list_loras, set_checkpoints_dir, set_checkpoints_extra_dir,
@@ -313,7 +316,7 @@ def _crop_input(label, height=280):
 # I/O image (noms, sauvegarde, metadonnees) -> cz_imageio.py (_gen_meta -> cz_pipeline).
 from cz_imageio import (  # noqa: E402,F401
     _now_stamp, _unique_path, _format_filename, build_output_path, _exif_bytes,
-    save_image, _list_output_files, _read_image_meta,
+    save_image, _list_output_files, _read_image_meta, set_metadata_scheme,
 )
 
 
@@ -513,8 +516,13 @@ def _refresh_checkpoints(new_dir, extra_dir=""):
     except Exception:
         pass
     cks = list_checkpoints()
+    n_new = _ensure_model_presets(cks)  # preset basique pour tout nouveau modele local
     locs = " + ".join(d for d in (cz_pipeline.CHECKPOINTS_DIR, cz_pipeline.CHECKPOINTS_EXTRA_DIR) if d)
-    return gr.update(choices=ZIMAGE_BASE_REPOS + cks), f"{len(cks)} checkpoint(s) in {locs} (saved)."
+    msg = f"{len(cks)} checkpoint(s) in {locs} (saved)."
+    if n_new:
+        msg += f" +{n_new} preset(s) auto-created."
+    # 3e sortie: rafraichit le menu Presets (nouveaux modeles -> nouveaux presets).
+    return (gr.update(choices=ZIMAGE_BASE_REPOS + cks), msg, gr.update(choices=list_presets()))
 
 
 def _performance_label_for(steps, guidance):
@@ -556,21 +564,25 @@ def _apply_checkpoint(name):
     set_zimage_transformer(path)
     st, g = profile_for_model(os.path.basename(path))
     return (f"FLUX transformer: {os.path.basename(path)} -> auto steps={st}, CFG={g} "
-            f"(reload on next run).", gr.update(value=st), gr.update(value=g), _perf_update(st, g))
+            f"(transformer swap on next run — VAE + text encoder stay loaded).",
+            gr.update(value=st), gr.update(value=g), _perf_update(st, g))
 
 
 def _apply_transformer_repo(repo):
     """Definit le transformer depuis un repo HF / dossier diffusers OU un .safetensors.
-    Ajuste steps/guidance ET le preset Performance selon le profil du modele."""
+    Ajuste steps/guidance ET le preset Performance selon le profil du modele.
+    Champ VIDE = no-op: on ne remet PAS a zero (sinon ce bouton effacerait le checkpoint
+    choisi juste au-dessus). Pour revenir au base repo pur, choisir un repo officiel dans
+    'FLUX checkpoint'."""
     repo = (repo or "").strip()
     if not repo:
-        return ("Transformer override is empty — no change. Pick a model in 'Z-Image "
+        return ("Transformer override is empty — no change. Pick a model in 'FLUX "
                 "checkpoint' above (that also clears any override).",
                 gr.update(), gr.update(), gr.update())
     set_zimage_transformer(repo)
     st, g = profile_for_model(repo)
     return (f"Transformer override: {repo} -> auto steps={st}, CFG={g} "
-            f"(keeps base VAE/encoder; reload on next run).",
+            f"(keeps base VAE/encoder loaded; transformer swap on next run).",
             gr.update(value=st), gr.update(value=g), _perf_update(st, g))
 
 
@@ -642,24 +654,42 @@ def _ui_wild_create(newname, content):
         return gr.update(), f"Create failed: {e}", newname
 
 
+# Nombre de slots LoRA affiches (configurable via config 'lora_slots', 1..10, defaut 3).
+MAX_LORA_SLOTS = 10
+LORA_SLOTS = max(1, min(MAX_LORA_SLOTS, int(_prefs.get("lora_slots", CONFIG.get("lora_slots", 3)))))
+
+
+def _ui_set_lora_slots(n):
+    """Regle le nombre de slots LoRA VISIBLES (Advanced) + persiste (preferences.json).
+    Les slots au-dela restent presents mais caches (valeur 'None' -> ignores)."""
+    n = max(1, min(MAX_LORA_SLOTS, int(n)))
+    try:
+        _save_prefs_keys({"lora_slots": n})
+    except Exception:
+        pass
+    return [gr.update(visible=(i < n)) for i in range(MAX_LORA_SLOTS)]
+
+
 def _refresh_loras(new_dir):
-    """Change le dossier loras + liste les LoRA (met a jour les 3 slots) + persiste."""
+    """Change le dossier loras + rafraichit TOUS les slots (N configurable) + persiste."""
     set_loras_dir(new_dir)
     try:
         _save_prefs_keys({"loras_dir": cz_pipeline.LORAS_DIR})   # persiste -> survit au reboot
     except Exception:
         pass
     lr = ["None"] + list_loras()
-    return (gr.update(choices=lr), gr.update(choices=lr), gr.update(choices=lr),
-            f"{len(lr) - 1} LoRA(s) in {cz_pipeline.LORAS_DIR} (saved).")
+    status = f"{len(lr) - 1} LoRA(s) in {cz_pipeline.LORAS_DIR} (saved)."
+    return tuple(gr.update(choices=lr) for _ in range(MAX_LORA_SLOTS)) + (status,)
 
 
-def _apply_loras(n1, w1, n2, w2, n3, w3):
-    """Applique la combinaison des 3 slots LoRA."""
-    set_loras([(n1, w1), (n2, w2), (n3, w3)])
+def _apply_loras(*vals):
+    """Applique la combinaison des slots LoRA. vals = (name1, weight1, name2, weight2, ...)."""
+    pairs = [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
+    set_loras(pairs)
     if not cz_pipeline.LORAS:
         return "LoRA: none."
-    return "LoRA: " + ", ".join(f"{os.path.basename(p)}@{w}" for p, w in cz_pipeline.LORAS) + " (reload on next run)."
+    return ("LoRA: " + ", ".join(f"{os.path.basename(p)}@{w}" for p, w in cz_pipeline.LORAS)
+            + " (applied on next run — no model reload).")
 
 
 def _path_for_lora(name):
@@ -668,29 +698,27 @@ def _path_for_lora(name):
     return name if os.path.isabs(name) else os.path.join(cz_pipeline.LORAS_DIR, name)
 
 
-def _ui_loras_apply(n1, w1, n2, w2, n3, w3):
-    """Applique les slots + agrege les mots-cles des LoRA selectionnees."""
-    status = _apply_loras(n1, w1, n2, w2, n3, w3)
+def _lora_keywords_for(names):
+    """Agrege les mots-cles (trigger words) des LoRA selectionnees."""
     kws = []
-    for n in (n1, n2, n3):
+    for n in names:
         p = _path_for_lora(n)
         if p:
             k = lora_keywords(p)
             if k:
                 kws.append(k)
-    return status, ", ".join(kws)
+    return ", ".join(kws)
 
 
-def _ui_loras_keywords(n1, n2, n3):
+def _ui_loras_apply(*vals):
+    """Applique les slots (N) + agrege les mots-cles des LoRA selectionnees."""
+    status = _apply_loras(*vals)
+    return status, _lora_keywords_for(vals[0::2])
+
+
+def _ui_loras_keywords(*names):
     """Recupere les mots-cles de toutes les LoRA selectionnees (bouton)."""
-    kws = []
-    for n in (n1, n2, n3):
-        p = _path_for_lora(n)
-        if p:
-            k = lora_keywords(p)
-            if k:
-                kws.append(k)
-    merged = ", ".join(kws)
+    merged = _lora_keywords_for(names)
     return merged, (f"{len(merged.split(','))} keyword(s)." if merged
                     else "No keywords in the selected LoRA(s).")
 
@@ -720,6 +748,21 @@ def _save_hf_token(token):
     set_hf_token(token)
     return gr.update(value=""), ("✅ HF token saved (preferences.json, gitignored) and applied. "
                                  "Gated downloads (e.g. FLUX.1-Krea-dev) will now authenticate.")
+
+
+def _save_civitai_key(token):
+    """Advanced: pose + persiste la cle CivitAI (preferences.json). Utilisee par
+    'Fetch from CivitAI' dans l'Asset Browser. Vide le champ apres coup."""
+    token = (token or "").strip()
+    if not token:
+        return gr.update(), ("✅ A CivitAI key is set." if cz_civitai.API_KEY
+                             else "Enter a CivitAI API key to save.")
+    cz_civitai.set_api_key(token)
+    try:
+        _save_prefs_keys({"civitai_api_key": token})
+    except Exception:
+        pass
+    return gr.update(value=""), "✅ CivitAI key saved (preferences.json) and applied."
 
 
 def _save_paths_to_prefs(esrgan_dir, checkpoints_dir=None, checkpoints_extra_dir=None,
@@ -1046,15 +1089,38 @@ def _gallery_delete(path, output_dir, sort="Newest", filt=""):
 # Memes options (enabled, generate_thumbnails, thumbnail_size/quality, blur).
 # ----------------------------------------------------------------------------
 # Asset Browser (SPA + reindex + thumbnails + delete) -> cz_assetbrowser.py.
-from cz_assetbrowser import _ab_get, _ab_resolve_dir, ab_reindex, ab_open_fast, delete_asset  # noqa: E402,F401
+from cz_assetbrowser import (_ab_get, _ab_resolve_dir, ab_reindex, ab_open_fast,  # noqa: E402,F401
+                             ab_build_catalog, delete_asset, rebuild_thumbs)
 
 
 # Assets statiques (SPA Asset Browser, JS d'interface, CSS) -> cz_assets.py
 from cz_assets import ASSET_BROWSER_HTML, CZ_JS, FOOOCUS_CSS  # noqa: E402
 
 
+# Reference vers le Blocks en cours (renseignee par build_ui), pour autoriser a la
+# volee des dossiers de sortie choisis dans l'UI. Gradio fige `allowed_paths` au
+# lancement, mais relit `blocks.allowed_paths` a CHAQUE requete de fichier -> on peut
+# y ajouter le dossier courant au moment d'ouvrir l'Asset Browser (sans redemarrage).
+_DEMO = None
+
+
+def _allow_runtime_path(output_dir):
+    """Ajoute le dossier de sortie resolu aux `allowed_paths` du Blocks en cours,
+    afin que Gradio accepte de servir index.html / miniatures s'il a ete change dans
+    l'UI apres le lancement. Sans effet si le Blocks n'est pas encore lance."""
+    try:
+        d = os.path.abspath(_ab_resolve_dir(output_dir))
+        paths = getattr(_DEMO, "allowed_paths", None)
+        if paths is not None and d not in paths:
+            paths.append(d)
+            _dbg(f"asset-browser: allowed runtime path {d}")
+    except Exception as e:
+        _dbg(f"allow runtime path failed: {e}")
+
+
 def _ui_ab_reindex(output_dir, thumb_size, quality, blur, gen_thumbs):
     """Bouton FORCE: regenere TOUTES les miniatures (synchrone) + lien."""
+    _allow_runtime_path(output_dir)
     try:
         n, idx, _ = ab_reindex(output_dir, thumb_size, quality, blur, gen_thumbs,
                                background_thumbs=False)
@@ -1071,13 +1137,190 @@ def _ui_gallery_open(output_dir):
     """Ouverture INSTANTANEE: ecrit index.html et ouvre l'onglet tout de suite, puis
     (re)indexe (manifest + miniatures) en tache de fond. La SPA charge le manifest
     existant immediatement et se rafraichit quand le nouvel index est pret."""
+    _allow_runtime_path(output_dir)
     try:
         idx = ab_open_fast(output_dir, _ab_get("thumbnail_size"), _ab_get("thumbnail_quality"),
                            bool(_ab_get("blur_thumbnails")), bool(_ab_get("generate_thumbnails")))
     except Exception as e:
         return f"Gallery open failed: {e}", ""
+    # Catalogue LoRAs / Models (onglets de l'Asset Browser) construit en tache de fond.
+    try:
+        threading.Thread(target=ab_build_catalog,
+                         args=(output_dir, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR),
+                         daemon=True).start()
+    except Exception as e:
+        _dbg(f"catalog build spawn failed: {e}")
     url = "/gradio_api/file=" + os.path.abspath(idx).replace("\\", "/")
     return "Opening Asset Browser in a new tab (indexing in background)...", url
+
+
+def _asset_focus_url(kind, name):
+    """Ouvre l'Asset Browser directement sur l'onglet 'loras' ou 'models', centre sur
+    'name' (fiche = preview + trigger words + exemples) quand c'est un fichier local.
+    Utilise par les icones a cote des dropdowns LoRA / checkpoint. Renvoie (status, url)."""
+    import urllib.parse
+    name = (name or "").strip()
+    out_dir = DEFAULT_OUTPUT_DIR
+    _allow_runtime_path(out_dir)
+    try:
+        idx = ab_open_fast(out_dir, _ab_get("thumbnail_size"), _ab_get("thumbnail_quality"),
+                           bool(_ab_get("blur_thumbnails")), bool(_ab_get("generate_thumbnails")))
+    except Exception as e:
+        return f"Asset Browser open failed: {e}", ""
+    # Catalogue construit SYNCHRONE ici (rapide: pas de hashing) pour que la cible soit
+    # presente dans loras.json/models.json au moment ou la SPA se focalise dessus.
+    try:
+        ab_build_catalog(out_dir, cz_pipeline.LORAS_DIR, cz_pipeline.CHECKPOINTS_DIR)
+    except Exception as e:
+        _dbg(f"catalog build (focus) failed: {e}")
+    focus = ""
+    if kind == "loras":
+        focus = name if name and name != "None" else ""            # list_loras -> chemin relatif
+    else:  # models: repo HF de base = pas de fichier local -> pas de focus (onglet seul)
+        if name and name not in ZIMAGE_BASE_REPOS:
+            focus = os.path.basename(name)                          # catalogue models indexe par nom de fichier
+    url = "/gradio_api/file=" + os.path.abspath(idx).replace("\\", "/") + "?src=" + kind
+    if focus:
+        url += "&focus=" + urllib.parse.quote(focus)
+    tgt = f" → {focus}" if focus else ""
+    return (f"Opening Asset Browser ({kind}{tgt})…", url)
+
+
+# Registre des jobs CivitAI en cours (cle = chemin absolu du .safetensors). Chaque etat:
+# {phase, frac (0..1 ou null), text, done, ok, message}. Ecrit par le thread de fetch,
+# lu par _api_job_progress (polling depuis l'Asset Browser).
+_BG_JOBS = {}
+_BG_LOCK = threading.Lock()
+
+
+def _bg_job_set(key, **fields):
+    with _BG_LOCK:
+        st = _BG_JOBS.get(key) or {}
+        st.update(fields)
+        _BG_JOBS[key] = st
+
+
+def _api_civitai_fetch(rel, kind):
+    """API (Asset Browser): demarre l'enrichissement CivitAI d'un modele EN ARRIERE-PLAN
+    et renvoie immediatement la cle du job. Le client interroge ensuite civitai_progress.
+    Un thread execute le fetch (preview + trigger words + exemples), met a jour l'etat a
+    chaque phase, puis reconstruit le catalogue LoRAs/Models."""
+    try:
+        import cz_civitai
+        mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
+        path = os.path.join(mdir, rel or "")
+        key = os.path.abspath(path)
+        _bg_job_set(key, phase="start", frac=None, text="Starting…",
+                         done=False, ok=False, message="")
+
+        def _progress(phase, frac, text):
+            _bg_job_set(key, phase=phase, frac=frac, text=text, done=False)
+
+        def _work():
+            try:
+                res = cz_civitai.fetch_civitai_for_model(path, progress=_progress)
+                try:
+                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
+                                     cz_pipeline.CHECKPOINTS_DIR)
+                except Exception as e:
+                    _dbg(f"catalog rebuild after civitai fetch failed: {e}")
+                _bg_job_set(key, phase="done", frac=1.0, done=True,
+                                 ok=bool(res.get("success")),
+                                 text=res.get("message", "done"),
+                                 message=res.get("message", "done"))
+            except Exception as e:
+                _bg_job_set(key, phase="error", frac=None, done=True, ok=False,
+                                 text=f"error: {e}", message=f"error: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+        return key
+    except Exception as e:
+        return f"error: {e}"
+
+
+def _api_thumbs_rebuild(kind):
+    """API (Asset Browser, bouton 'Rebuild thumbnails'): regenere DE FORCE toutes les
+    miniatures de l'onglet courant (outputs / loras / models), en parallele et en tache
+    de fond. Renvoie une cle de job a interroger via job_progress."""
+    try:
+        kind = (kind or "").strip() or "outputs"
+        key = "__thumbs__:" + kind
+        _bg_job_set(key, phase="start", i=0, n=0, text="Scanning…",
+                    done=False, ok=False, summary=None)
+
+        def _progress(done, total, name):
+            _bg_job_set(key, phase="thumbs", i=done, n=total, done=False,
+                        text=f"{name}")
+
+        def _work():
+            try:
+                _allow_runtime_path(DEFAULT_OUTPUT_DIR)
+                res = rebuild_thumbs(kind, DEFAULT_OUTPUT_DIR,
+                                     loras_dir=cz_pipeline.LORAS_DIR,
+                                     checkpoints_dir=cz_pipeline.CHECKPOINTS_DIR,
+                                     force=True, progress=_progress)
+                _bg_job_set(key, phase="done", done=True, ok=True, summary=res,
+                            text=(f"{res['made']} rebuilt, {res['failed']} failed "
+                                  f"({res['total']} total)"))
+            except Exception as e:
+                _bg_job_set(key, phase="error", done=True, ok=False,
+                            text=f"error: {e}", summary=None)
+
+        threading.Thread(target=_work, daemon=True).start()
+        return key
+    except Exception as e:
+        return f"error: {e}"
+
+
+def _api_job_progress(key):
+    """API (Asset Browser): etat courant d'un job de fond (JSON). done=true quand fini.
+    Sert les 3 types de job: fetch CivitAI par-modele, batch, rebuild des miniatures."""
+    with _BG_LOCK:
+        st = _BG_JOBS.get(key)
+        st = dict(st) if st else {"phase": "unknown", "frac": None, "text": "",
+                                  "done": True, "ok": False, "message": "no such job"}
+    return json.dumps(st)
+
+
+def _api_civitai_fetch_all(kind):
+    """API (Asset Browser, bouton 'Fetch all missing'): enrichit EN ARRIERE-PLAN tous les
+    modeles manquants du dossier LoRAs ou checkpoints (meme coeur que le script .bat/.sh
+    cz_civitai_batch). Renvoie une cle de job batch a interroger via civitai_progress."""
+    try:
+        import cz_civitai_batch
+        import cz_civitai
+        kind = (kind or "").strip() or "loras"
+        key = "__batch__:" + kind
+        _bg_job_set(key, phase="start", i=0, n=0, text="Starting…",
+                         done=False, ok=False, summary=None)
+
+        def _progress(i, n, name, phase, text):
+            _bg_job_set(key, phase=phase, i=i, n=n, text=text, done=False)
+
+        def _work():
+            try:
+                api_key = getattr(cz_civitai, "API_KEY", None)
+                summary = cz_civitai_batch.run(
+                    kind=kind, api_key=api_key, progress=_progress,
+                    loras_dir=cz_pipeline.LORAS_DIR,           # dossiers LIVE (modifiables dans l'UI)
+                    checkpoints_dir=cz_pipeline.CHECKPOINTS_DIR)
+                try:
+                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
+                                     cz_pipeline.CHECKPOINTS_DIR)
+                except Exception as e:
+                    _dbg(f"catalog rebuild after batch failed: {e}")
+                _bg_job_set(
+                    key, phase="done", done=True, ok=True, summary=summary,
+                    text=(f"enriched {summary['enriched']}, updated {summary['updated']}, "
+                          f"skipped {summary['skipped']}, failed {summary['failed']}"))
+            except Exception as e:
+                _bg_job_set(key, phase="error", done=True, ok=False,
+                                 text=f"error: {e}", summary=None)
+
+        threading.Thread(target=_work, daemon=True).start()
+        return key
+    except Exception as e:
+        return f"error: {e}"
 
 
 # delete_asset -> cz_assetbrowser.py (importe en tete; expose via api_name dans build_ui).
@@ -1194,7 +1437,7 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
     try:
         set_offload_mode(offload_mode)
         set_guidance(guidance)
-        base_prompt = _apply_wildcards(prompt, _seed_rng(seed))   # __name__ -> random line
+        base_prompt = _apply_wildcards(prompt, _seed_rng(seed), index=0)  # __name__ -> line
         picked_styles = _pick_styles(styles, style_random)        # noms de styles -> meta
         full_prompt, full_negative = _apply_styles(base_prompt, negative, picked_styles)
         mode = "img2img/upscale" if (use_input and input_image is not None) else "txt2img"
@@ -1255,16 +1498,20 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
             return _done([last_result], report, [_LAST_RUN_DST])
         # txt2img (batch image_number)
         n = max(1, int(image_number))
+        # Resout un seed -1 (random) en une valeur CONCRETE -> reproductible, memorisee
+        # (bouton "Reuse last seed") et ecrite correctement dans les metadonnees.
+        base_seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
+        cz_pipeline._LAST_SEED = base_seed
         images, img_paths, total_t = [], [], 0.0
         for i in range(n):
             if cz_pipeline._STOP:
                 _log(f"stop requested after {i}/{n} image(s)")
                 break
-            s = (int(seed) + i) if int(seed) >= 0 else -1
+            s = base_seed if cz_pipeline._NO_SEED_INCREMENT else base_seed + i
             progress(i / n, desc=f"Image {i + 1}/{n}")
             # Wildcards (__name__) + style aleatoire, par image (seed -> reproductible)
             chosen = _pick_styles(styles, style_random)
-            p_i = _apply_wildcards(prompt, _seed_rng(s))
+            p_i = _apply_wildcards(prompt, _seed_rng(s), index=i)
             fp, fn = _apply_styles(p_i, negative, chosen)
             if style_random:
                 _log(f"random style #{i + 1}: {chosen}")
@@ -1272,17 +1519,31 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
                                  upscale=False, steps=refine_steps)
             total_t += t["txt2img"]
             tag, gmode = "txt2img", "txt2img"
+            base_img = img   # image txt2img avant un eventuel upscale
             # Chainage optionnel: upscale (ESRGAN + refine) sur l'image generee, sans
             # action manuelle. Reutilise le meme pipeline que l'onglet Upscale/img2img.
             if auto_upscale:
                 progress((i + 0.5) / n, desc=f"Upscaling {i + 1}/{n}")
                 eff_denoise = float(denoise) if do_refine else 0.0
                 img, ut = process_one(
-                    img, esrgan_model, factor, eff_denoise, refine_steps, fp, s,
+                    base_img, esrgan_model, factor, eff_denoise, refine_steps, fp, s,
                     tile, overlap, refine_tile=refine_tile, refine_overlap=refine_overlap,
                     do_esrgan=bool(do_esrgan), refine_first=bool(refine_first))
                 total_t += ut.get("esrgan", 0.0) + ut.get("refine", 0.0)
                 tag, gmode = "upscaled", "txt2img+upscale"
+                # Option: sauver AUSSI l'image txt2img d'origine (avant l'upscale).
+                if cz_pipeline._SAVE_PRE_UPSCALE and save_mode != "display":
+                    try:
+                        pre_dst = build_output_path(None, save_mode, output_dir, output_format,
+                                                    tag="txt2img", seed=s, size=base_img.size,
+                                                    index=(i + 1 if n > 1 else 0))
+                        if pre_dst:
+                            save_image(base_img, pre_dst, output_format, meta=_gen_meta(
+                                "txt2img", fp, fn, s, gen_steps, cz_pipeline.GUIDANCE,
+                                base_img.size, styles=chosen))
+                            _dbg(f"saved pre-upscale: {pre_dst}")
+                    except Exception as e:
+                        _dbg(f"pre-upscale save failed: {e}")
             images.append(img)
             dst = None
             if save_mode != "display":
@@ -1333,8 +1594,761 @@ def _pick_download(evt: gr.SelectData):
     return gr.DownloadButton(visible=False)
 
 
+# ---- Job queue: snapshots complets de reglages empiles, executes en serie ----
+# Config: bloc "job_queue" de config.txt. enabled=false -> AUCUN composant cree,
+# aucun handler cable (contrat zero-cout quand off).
+_JQ_CFG = CONFIG.get("job_queue") if isinstance(CONFIG.get("job_queue"), dict) else {}
+JOB_QUEUE_ENABLED = bool(_JQ_CFG.get("enabled", True))
+
+# Indices dans _gen_inputs (a garder synchro avec la liste dans build_ui).
+_Q_HISTORY_IDX = 34   # l'historique de session est injecte LIVE au run, pas du snapshot
+_Q_IDX = {"prompt": 0, "use_input": 4, "width": 13, "height": 14,
+          "gen_steps": 15, "image_number": 16, "seed": 17}
+
+
+def _q_model_state():
+    """Snapshot de l'etat modele GLOBAL (hors _gen_inputs): checkpoint/transformer,
+    LoRA actives, sampler/schedule. Rend chaque job autonome et reproductible."""
+    return {"base_repo": cz_pipeline.BASE_REPO,
+            "transformer": cz_pipeline.ZIMAGE_TRANSFORMER,
+            "loras": list(cz_pipeline.LORAS),
+            "sampler": cz_pipeline.SAMPLER,
+            "schedule": cz_pipeline.SCHEDULE}
+
+
+def _q_restore_model_state(ms):
+    """Restaure l'etat modele d'un job via les setters existants -> free_vram() se
+    declenche automatiquement si (et seulement si) le modele change entre 2 jobs."""
+    if ms.get("base_repo"):
+        set_zimage_model(ms["base_repo"])
+    set_zimage_transformer(ms.get("transformer") or "")
+    set_loras([(p, w) for p, w in (ms.get("loras") or [])])
+    set_sampler(ms.get("sampler") or "euler")
+    set_schedule(ms.get("schedule") or "sgm_uniform")
+
+
+def _q_label(vals, ms):
+    """Etiquette lisible d'un job (parametres cles) depuis le snapshot."""
+    mode = "img2img" if vals[_Q_IDX["use_input"]] else "txt2img"
+    model = os.path.basename(str(ms.get("transformer") or ms.get("base_repo") or "?"))
+    n = max(1, int(vals[_Q_IDX["image_number"]] or 1))
+    seed = int(vals[_Q_IDX["seed"]] if vals[_Q_IDX["seed"]] is not None else -1)
+    p = str(vals[_Q_IDX["prompt"]] or "").strip().replace("\n", " ")
+    lbl = (f"{mode} · {model} · {int(vals[_Q_IDX['width']])}x{int(vals[_Q_IDX['height']])} · "
+           f"{int(vals[_Q_IDX['gen_steps']])} steps · seed {seed} · x{n}")
+    if p:
+        lbl += f" · “{p[:40]}{'…' if len(p) > 40 else ''}”"
+    return lbl
+
+
+def _q_move(items, sel, delta):
+    """Deplace l'element sel de delta (liste pure). Renvoie (items, nouvelle selection)."""
+    items = list(items or [])
+    if sel is None or not (0 <= int(sel) < len(items)):
+        return items, None
+    i, j = int(sel), int(sel) + int(delta)
+    if not (0 <= j < len(items)):
+        return items, i
+    items[i], items[j] = items[j], items[i]
+    return items, j
+
+
+def _q_remove(items, sel):
+    """Supprime l'element sel (liste pure). Renvoie (items, selection ajustee)."""
+    items = list(items or [])
+    if sel is None or not (0 <= int(sel) < len(items)):
+        return items, None
+    items.pop(int(sel))
+    return items, (min(int(sel), len(items) - 1) if items else None)
+
+
+def _q_render(items, sel=None):
+    """Updates UI d'apres la file: (dropdown selection, markdown liste, label bouton)."""
+    choices = [(f"#{i + 1} {it['label']}", i) for i, it in enumerate(items)]
+    val = int(sel) if (sel is not None and 0 <= int(sel) < len(items)) else None
+    md = "\n".join(f"{i + 1}. {it['label']}" for i, it in enumerate(items)) or "*Queue empty.*"
+    return (gr.update(choices=choices, value=val), md,
+            gr.update(value=f"+ Queue ({len(items)})"))
+
+
+def _ui_queue_add(*args):
+    """'+ Queue': fige les 36 valeurs courantes + l'etat modele global, empile."""
+    *vals, items = args
+    job = {"vals": list(vals), "ms": _q_model_state()}
+    job["label"] = _q_label(job["vals"], job["ms"])
+    items = list(items or []) + [job]
+    _log(f"job added ({len(items)} queued): {job['label']}", mod="queue")
+    return (items, *_q_render(items, len(items) - 1))
+
+
+def _ui_queue_move(items, sel, delta):
+    items, sel = _q_move(items, sel, delta)
+    return (items, *_q_render(items, sel))
+
+
+def _ui_queue_remove(items, sel):
+    items, sel = _q_remove(items, sel)
+    return (items, *_q_render(items, sel))
+
+
+def _ui_queue_clear(items):
+    _log("queue cleared", mod="queue")
+    return ([], *_q_render([]))
+
+
+def _ui_queue_run(items, history, progress=gr.Progress(track_tqdm=True)):
+    """Execute la file en serie. Chaque job restaure son etat modele (purge VRAM auto au
+    changement) puis rejoue _ui_generate. Stop = interrompt le job courant et met la
+    file en PAUSE: les jobs restants demeurent empiles."""
+    items = list(items or [])
+    if not items:
+        return ([], *_q_render([]), gr.update(), "*Queue empty.*", history, history)
+    total, done, gallery_all, rep = len(items), 0, [], ""
+    touched_gids = set()
+    while items:
+        job = items[0]
+        _log(f"running job {done + 1}/{total}: {job['label']}", mod="queue")
+        try:
+            _q_restore_model_state(job["ms"])
+            vals = list(job["vals"])
+            vals[_Q_HISTORY_IDX] = history
+            g, rep, history, _hg = _ui_generate(*vals, progress=progress)
+            gallery_all.extend(list(g or []))
+            # Cellule d'une grille X/Y/Z: memorise la 1re image (reduite) pour la planche.
+            xj = job.get("xyz")
+            if xj and g:
+                try:
+                    im = _as_pil(g[0])
+                    if im is not None:
+                        im = im.copy()
+                        im.thumbnail((XYZ_THUMB, XYZ_THUMB), Image.LANCZOS)
+                        meta = _XYZ_PENDING.get(xj["gid"])
+                        if meta is not None:
+                            meta.setdefault("cells", {})[(xj["ix"], xj["iy"], xj["iz"])] = im
+                            touched_gids.add(xj["gid"])
+                except Exception as e:
+                    _log(f"cell capture failed ({e})", mod="xyz")
+        except Exception as e:
+            _log(f"job failed ({e}); continuing with next", mod="queue")
+            rep = f"Job failed: {e}"
+        done += 1
+        items.pop(0)
+        if cz_pipeline._STOP:
+            _log(f"stopped; queue PAUSED, {len(items)} job(s) remaining", mod="queue")
+            break
+    # Assemblage des planches X/Y/Z touchees pendant ce run (cellules cumulees a travers
+    # pause/reprise). gid libere quand plus aucun job de cette grille n'est en file.
+    for gid in sorted(touched_gids):
+        meta = _XYZ_PENDING.get(gid)
+        if not meta:
+            continue
+        try:
+            for p in _xyz_assemble(meta, meta.get("cells", {}), thumb=XYZ_THUMB):
+                gallery_all.append(_dl_path(Image.open(p), p))
+        except Exception as e:
+            _log(f"assembly failed ({e})", mod="xyz")
+        if not any((j.get("xyz") or {}).get("gid") == gid for j in items):
+            _XYZ_PENDING.pop(gid, None)
+    if items and cz_pipeline._STOP:
+        status = f"Queue paused after {done}/{total} job(s) — {len(items)} remaining (Run queue to resume)."
+    else:
+        status = f"Queue done: {done} job(s)."
+    return (items, *_q_render(items), gallery_all, f"{status}  \n{rep}", history, history)
+
+
+# ---- X/Y/Z grid: combos de parametres -> jobs de la Job queue + planche annotee ----
+# Config: bloc "xyz_grid" de config.txt. Necessite job_queue (reutilise snapshots,
+# runner et pause Stop). enabled=false -> aucun composant, zero cout.
+_XYZ_CFG = CONFIG.get("xyz_grid") if isinstance(CONFIG.get("xyz_grid"), dict) else {}
+XYZ_FEATURE_ENABLED = bool(_XYZ_CFG.get("enabled", True))          # feature (UI + CLI)
+XYZ_ENABLED = XYZ_FEATURE_ENABLED and JOB_QUEUE_ENABLED            # panneau UI (via la file)
+XYZ_MAX_JOBS = int(_XYZ_CFG.get("max_jobs", 100))
+XYZ_THUMB = int(_XYZ_CFG.get("thumb", 512))
+
+# Table des axes: kind=val -> _gen_inputs[idx] cote UI, param abstrait cote CLI
+# (cz_cli --xyz); kind=ms -> etat modele; kinds speciaux geres dans _xyz_apply.
+# choices=callable -> liste fermee evaluee au build.
+_XYZ_AXES = {
+    "(none)":       None,
+    "Checkpoint":   {"kind": "checkpoint"},
+    "Sampler":      {"kind": "ms", "key": "sampler", "choices": lambda: list(SAMPLER_CHOICES)},
+    "Schedule":     {"kind": "ms", "key": "schedule", "choices": lambda: list(SCHEDULE_CHOICES)},
+    "Steps":        {"kind": "val", "idx": 15, "cast": int, "param": "gen_steps"},
+    "Guidance":     {"kind": "val", "idx": 18, "cast": float, "param": "guidance"},
+    "Seed":         {"kind": "val", "idx": 17, "cast": int, "param": "seed"},
+    "ESRGAN model": {"kind": "val", "idx": 20, "cast": str, "param": "esrgan",
+                     "choices": lambda: list_esrgan_models()},
+    "Factor":       {"kind": "val", "idx": 24, "cast": float, "param": "factor"},
+    "Denoise":      {"kind": "val", "idx": 25, "cast": float, "param": "denoise"},
+    "Tile":         {"kind": "val", "idx": 27, "cast": int, "param": "tile"},
+    "Refine tile":  {"kind": "val", "idx": 29, "cast": int, "param": "refine_tile"},
+    "LoRA weight":  {"kind": "lora_weight"},
+    "Performance":  {"kind": "performance"},
+    "Prompt S/R":   {"kind": "sr"},
+}
+
+
+# Autosuggest des champs de valeurs (sous-cle "suggest" du bloc xyz_grid).
+XYZ_SUGGEST = bool(_XYZ_CFG.get("suggest", True))
+
+# Valeurs de calibrage classiques proposees pour les axes numeriques.
+_XYZ_CALIB = {
+    "Steps": "4, 8, 12, 20, 28",
+    "Guidance": "0, 2, 3.5, 5",
+    "Seed": "-1, 42, 1234",
+    "Factor": "1.5, 2, 3, 4",
+    "Denoise": "0.2, 0.3, 0.4",
+    "Tile": "384, 512, 768",
+    "Refine tile": "0, 768, 1024",
+    "LoRA weight": "0.4, 0.7, 1.0",
+}
+
+
+def _xyz_csv_join(values):
+    """Joint des valeurs en CSV re-parsable par _xyz_parse_values: guillemete celles
+    qui contiennent virgule ou guillemet (double les guillemets internes)."""
+    out = []
+    for v in map(str, values):
+        if "," in v or '"' in v:
+            out.append('"' + v.replace('"', '""') + '"')
+        else:
+            out.append(v)
+    return ", ".join(out)
+
+
+def _xyz_suggestions(axis):
+    """Suggestions contextuelles d'un axe: (texte inserable, placeholder). Listes
+    fermees de l'app pour les choix finis, calibrage pour le numerique, aide pour S/R."""
+    spec = _XYZ_AXES.get(axis)
+    if not spec:
+        return "", "pick an axis first"
+    kind = spec.get("kind")
+    if kind == "sr":
+        return "", 'search term, replacement1, "replacement, with comma", ...'
+    if kind == "checkpoint":
+        names = ZIMAGE_BASE_REPOS + list_checkpoints()
+        return _xyz_csv_join(names), f"e.g. {_xyz_csv_join(names[:2])}"
+    if kind == "performance":
+        names = list(PERFORMANCE)
+        return _xyz_csv_join(names), f"e.g. {_xyz_csv_join(names[:2])}"
+    choices = spec.get("choices")
+    if choices:
+        try:
+            names = list(choices())
+        except Exception:
+            names = []
+        return _xyz_csv_join(names), (f"e.g. {_xyz_csv_join(names[:3])}" if names else "no items found")
+    calib = _XYZ_CALIB.get(axis, "")
+    return calib, (f"e.g. {calib}" if calib else "comma-separated values")
+
+
+def _ui_xyz_axis_changed(axis):
+    """Change d'axe -> placeholder contextualise du champ valeurs."""
+    _fill, ph = _xyz_suggestions(axis)
+    return gr.update(placeholder=ph)
+
+
+def _ui_xyz_fill(axis, current):
+    """Bouton suggest: insere la liste complete (choix fermes / calibrage) si le champ
+    est vide, sinon ne touche pas a la saisie de l'utilisateur."""
+    fill, _ph = _xyz_suggestions(axis)
+    if not fill or (current or "").strip():
+        return gr.update()
+    return gr.update(value=fill)
+
+
+def _xyz_parse_values(s):
+    """Parse un champ de valeurs CSV; les guillemets protegent les virgules
+    (csv stdlib). Renvoie la liste des valeurs non vides."""
+    if not (s or "").strip():
+        return []
+    row = next(csv.reader([s], skipinitialspace=True))
+    return [v.strip() for v in row if v.strip()]
+
+
+def _xyz_match(value, choices):
+    """Resout `value` dans une liste fermee: exact insensible a la casse, sinon
+    sous-chaine unique. Renvoie (choix, None) ou (None, message d'erreur)."""
+    v = str(value).lower().strip()
+    exact = [c for c in choices if str(c).lower() == v]
+    if exact:
+        return exact[0], None
+    part = [c for c in choices if v in str(c).lower()]
+    if len(part) == 1:
+        return part[0], None
+    if not part:
+        return None, f"'{value}' not found (choices: {', '.join(map(str, choices))[:120]})"
+    return None, f"'{value}' is ambiguous ({', '.join(map(str, part))[:120]})"
+
+
+def _xyz_validate_axis(name, raw_values, base_vals, base_ms):
+    """Valide/normalise les valeurs d'un axe AVANT le build. Renvoie (values, None)
+    ou (None, message d'erreur)."""
+    spec = _XYZ_AXES.get(name)
+    if not spec:
+        return None, f"unknown axis '{name}'"
+    if not raw_values:
+        return None, f"{name}: no values"
+    kind = spec.get("kind")
+    if kind == "sr":
+        term = raw_values[0]
+        if len(raw_values) < 2:
+            return None, "Prompt S/R needs the search term + at least one replacement"
+        if term not in str(base_vals[_Q_IDX["prompt"]] or ""):
+            return None, f"Prompt S/R: '{term}' not found in the prompt"
+        return list(raw_values), None
+    if kind == "lora_weight":
+        if not base_ms.get("loras"):
+            return None, "LoRA weight: no active LoRA (pick one in Models first)"
+        try:
+            return [float(v) for v in raw_values], None
+        except ValueError as e:
+            return None, f"LoRA weight: {e}"
+    if kind == "performance":
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, list(PERFORMANCE))
+            if err:
+                return None, f"Performance: {err}"
+            out.append(m)
+        return out, None
+    if kind == "checkpoint":
+        choices = ZIMAGE_BASE_REPOS + list_checkpoints()
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, choices)
+            if err:
+                return None, f"Checkpoint: {err}"
+            out.append(m)
+        return out, None
+    choices = spec.get("choices")
+    if choices:
+        out = []
+        for v in raw_values:
+            m, err = _xyz_match(v, choices())
+            if err:
+                return None, f"{name}: {err}"
+            out.append(m)
+        return out, None
+    cast = spec.get("cast", str)
+    try:
+        return [cast(v) for v in raw_values], None
+    except ValueError:
+        return None, f"{name}: non-numeric value in {raw_values}"
+
+
+def _xyz_apply(name, value, vals, ms):
+    """Applique la valeur d'un axe a un snapshot (vals, ms) — mutation en place."""
+    spec = _XYZ_AXES[name]
+    kind = spec.get("kind")
+    if kind == "val":
+        vals[spec["idx"]] = value
+    elif kind == "ms":
+        ms[spec["key"]] = value
+    elif kind == "checkpoint":
+        if value in ZIMAGE_BASE_REPOS:
+            ms["base_repo"], ms["transformer"] = value, None
+        else:
+            ms["transformer"] = resolve_checkpoint(value)
+    elif kind == "lora_weight":
+        ms["loras"] = [(p, float(value)) for p, _w in (ms.get("loras") or [])]
+    elif kind == "performance":
+        st, g = PERFORMANCE[value]
+        vals[_Q_IDX["gen_steps"]], vals[18] = int(st), float(g)
+    elif kind == "sr":
+        term = spec["_term"]
+        if str(value) != term:
+            vals[_Q_IDX["prompt"]] = str(vals[_Q_IDX["prompt"]] or "").replace(term, str(value))
+
+
+def _xyz_build_jobs(axes, base_vals, base_ms):
+    """Construit les jobs du produit croise. axes = liste ordonnee [(nom, values)] pour
+    X (requis), Y, Z (optionnels). Renvoie (jobs, meta) — meta decrit la planche."""
+    gid = time.strftime("%Y%m%d_%H%M%S")
+    (xn, xv) = axes[0]
+    (yn, yv) = axes[1] if len(axes) > 1 else (None, [None])
+    (zn, zv) = axes[2] if len(axes) > 2 else (None, [None])
+    # Prompt S/R: memorise le terme cherche (1re valeur) pour _xyz_apply.
+    for n, v in axes:
+        if _XYZ_AXES[n].get("kind") == "sr":
+            _XYZ_AXES[n]["_term"] = str(v[0])
+    jobs = []
+    for iz, z in enumerate(zv):
+        for iy, y in enumerate(yv):
+            for ix, x in enumerate(xv):
+                vals, ms = list(base_vals), dict(base_ms, loras=list(base_ms.get("loras") or []))
+                _xyz_apply(xn, x, vals, ms)
+                if yn is not None:
+                    _xyz_apply(yn, y, vals, ms)
+                if zn is not None:
+                    _xyz_apply(zn, z, vals, ms)
+                parts = [f"{xn}={x}"] + ([f"{yn}={y}"] if yn else []) + ([f"{zn}={z}"] if zn else [])
+                jobs.append({"vals": vals, "ms": ms, "label": "xyz · " + " · ".join(parts),
+                             "xyz": {"gid": gid, "ix": ix, "iy": iy, "iz": iz}})
+    meta = {"gid": gid, "x": (xn, [str(v) for v in xv]),
+            "y": (yn, [str(v) for v in yv]) if yn else None,
+            "z": (zn, [str(v) for v in zv]) if zn else None,
+            "out_dir": str(base_vals[32] or DEFAULT_OUTPUT_DIR)}
+    return jobs, meta
+
+
+def _as_pil(item):
+    """PIL depuis un item de galerie (_dl_path: chemin str ou PIL)."""
+    if isinstance(item, str):
+        return Image.open(item).convert("RGB")
+    if isinstance(item, (tuple, list)) and item:
+        return _as_pil(item[0])
+    return item.convert("RGB") if item is not None else None
+
+
+def _xyz_font(size):
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _xyz_assemble(meta, cells, thumb=512):
+    """Assemble les planches annotees (une par valeur de Z): X en colonnes, Y en lignes,
+    vignettes letterbox `thumb`px, marges pour les libelles. cells = {(ix,iy,iz): PIL}.
+    Renvoie la liste des chemins sauves."""
+    from PIL import ImageDraw
+    xn, xv = meta["x"]
+    yn, yv = meta["y"] if meta["y"] else (None, [""])
+    zn, zv = meta["z"] if meta["z"] else (None, [""])
+    left = 200 if yn else 20
+    top_hdr, top_lbl = 44, 40
+    bg, fg, line = (17, 24, 42), (223, 230, 242), (60, 72, 100)
+    f_lbl, f_hdr = _xyz_font(22), _xyz_font(26)
+    out_root = _ab_resolve_dir(meta["out_dir"])
+    sheet_dir = os.path.join(out_root, f"xyz_{meta['gid']}")
+    os.makedirs(sheet_dir, exist_ok=True)
+    saved = []
+    for iz, z in enumerate(zv):
+        w = left + len(xv) * (thumb + 8) + 20
+        h = top_hdr + top_lbl + len(yv) * (thumb + 8) + 20
+        sheet = Image.new("RGB", (w, h), bg)
+        d = ImageDraw.Draw(sheet)
+        hdr = f"X: {xn}" + (f"  ·  Y: {yn}" if yn else "") + (f"  ·  Z: {zn} = {z}" if zn else "")
+        d.text((left, 10), hdr, fill=fg, font=f_hdr)
+        for ix, x in enumerate(xv):
+            cx = left + ix * (thumb + 8)
+            d.text((cx + 6, top_hdr + 8), str(x)[:40], fill=fg, font=f_lbl)
+        for iy, y in enumerate(yv):
+            cy = top_hdr + top_lbl + iy * (thumb + 8)
+            if yn:
+                d.text((10, cy + thumb // 2 - 12), str(y)[:22], fill=fg, font=f_lbl)
+            for ix in range(len(xv)):
+                cx = left + ix * (thumb + 8)
+                img = cells.get((ix, iy, iz))
+                if img is None:
+                    d.rectangle([cx, cy, cx + thumb, cy + thumb], outline=line, width=2)
+                    d.text((cx + thumb // 2 - 8, cy + thumb // 2 - 12), "—", fill=line, font=f_hdr)
+                    continue
+                t = img.copy()
+                t.thumbnail((thumb, thumb), Image.LANCZOS)
+                sheet.paste(t, (cx + (thumb - t.width) // 2, cy + (thumb - t.height) // 2))
+        suffix = f"_{zn}-{z}" if zn else ""
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(suffix))[:60]
+        dst = os.path.join(sheet_dir, f"sheet{safe or ''}.png")
+        sheet.save(dst)
+        saved.append(dst)
+        _log(f"sheet saved: {dst}", mod="xyz")
+    return saved
+
+
+def _ui_xyz_build(*args):
+    """'Build grid -> queue': valide les axes, produit les combos, empile les jobs."""
+    *gen_vals, xa, xv, ya, yv, za, zv, items = args
+    items = list(items or [])
+    axes_in = [(a, v) for a, v in ((xa, xv), (ya, yv), (za, zv)) if a and a != "(none)"]
+    if not axes_in:
+        return (items, *_q_render(items), "Pick at least the X axis.")
+    names = [a for a, _v in axes_in]
+    if len(set(names)) != len(names):
+        return (items, *_q_render(items), "Each axis must vary a different parameter.")
+    base_ms = _q_model_state()
+    axes = []
+    for name, raw in axes_in:
+        values, err = _xyz_validate_axis(name, _xyz_parse_values(raw), list(gen_vals), base_ms)
+        if err:
+            return (items, *_q_render(items), f"❌ {err}")
+        axes.append((name, values))
+    total = 1
+    for _n, v in axes:
+        total *= len(v)
+    if total > XYZ_MAX_JOBS:
+        return (items, *_q_render(items),
+                f"❌ {total} combos > max_jobs ({XYZ_MAX_JOBS}). Reduce the value lists "
+                f"(or raise xyz_grid.max_jobs in config.txt).")
+    jobs, meta = _xyz_build_jobs(axes, list(gen_vals), base_ms)
+    _XYZ_PENDING[meta["gid"]] = meta
+    items += jobs
+    _log(f"grid built: {total} job(s) queued (gid {meta['gid']})", mod="xyz")
+    return (items, *_q_render(items, len(items) - 1),
+            f"Built **{total}** job(s) ({' × '.join(str(len(v)) for _n, v in axes)}). "
+            f"Press **Run queue** to execute; the annotated sheet(s) will be saved in "
+            f"`xyz_{meta['gid']}/` and shown in the gallery.")
+
+
+# Planches en attente d'assemblage: gid -> meta (rempli au build, consomme au run).
+_XYZ_PENDING = {}
+
+
+# ---- Tag autocomplete (prompts): CSV tags/ + assets locaux, dropdown sous le caret ----
+# Config: bloc "tag_autocomplete". enabled=false -> pas d'import cz_tags, pas de
+# telechargement, pas de JS injecte (contrat zero-cout quand off).
+_TAC_CFG = CONFIG.get("tag_autocomplete") if isinstance(CONFIG.get("tag_autocomplete"), dict) else {}
+TAGAC_ENABLED = bool(_TAC_CFG.get("enabled", True))
+TAGAC_SOURCES = _TAC_CFG.get("sources", [
+    "https://raw.githubusercontent.com/DominikDoom/a1111-sd-webui-tagcomplete/main/tags/danbooru.csv",
+])
+TAGAC_MAX = int(_TAC_CFG.get("max_results", 8))
+
+
+def _tagac_head():
+    """Prepare le <script> d'autocomplete (ou None): telecharge les sources une fois
+    (atomique + progression), construit le payload client (URLs des CSV + wildcards
+    locaux). Tout echec -> warning et feature simplement absente (le boot continue)."""
+    if not TAGAC_ENABLED:
+        return None
+    try:
+        from cz_tags import ensure_tag_sources, list_tag_files
+        from cz_assets import TAG_AC_JS
+        ensure_tag_sources(TAGAC_SOURCES)
+        files = list_tag_files()
+        urls = ["/gradio_api/file=" + os.path.abspath(p).replace("\\", "/") for p in files]
+        local = [f"__{w}__" for w in list_wildcards()]
+        if not urls and not local:
+            _log("no tag source available; autocomplete inactive", mod="tagac")
+            return None
+        js = (TAG_AC_JS.replace("__SRC__", json.dumps(urls))
+              .replace("__LOCAL__", json.dumps(local))
+              .replace("__MAX__", str(TAGAC_MAX)))
+        _log(f"{len(urls)} CSV source(s) + {len(local)} local asset(s)", mod="tagac")
+        return "<script>" + js + "</script>"
+    except Exception as e:
+        _log(f"init failed ({e}); autocomplete disabled", mod="tagac")
+        return None
+
+
 # JS injecte au chargement: force le theme sombre, preview de style au survol,
 # et lightbox plein ecran au clic sur le rendu. __MAP__ = {nom_style: url_vignette}.
+def _parse_a1111_params(text):
+    """Parse le format A1111/Civitai (chunk PNG 'parameters'):
+        <prompt>\\nNegative prompt: <neg>\\nSteps: N, Sampler: ..., Seed: N, Size: WxH, Model: ...
+    Renvoie un dict {prompt, negative, seed, steps, guidance, sampler, size, model}."""
+    def _int(v):
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return None
+
+    def _float(v):
+        try:
+            return float(str(v).strip())
+        except Exception:
+            return None
+
+    out = {}
+    t = (text or "").replace("\r", "")
+    neg_i = t.find("Negative prompt:")
+    steps_i = t.find("\nSteps:")
+    if neg_i >= 0:
+        out["prompt"] = t[:neg_i].strip()
+        rest = t[neg_i + len("Negative prompt:"):]
+        s2 = rest.find("\nSteps:")
+        out["negative"] = (rest[:s2] if s2 >= 0 else rest).strip()
+        params = rest[s2:].strip() if s2 >= 0 else ""
+    else:
+        out["prompt"] = (t[:steps_i] if steps_i >= 0 else t).strip()
+        out["negative"] = ""
+        params = t[steps_i:].strip() if steps_i >= 0 else ""
+    for part in params.split(","):
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k, v = k.strip().lower(), v.strip()
+        if k == "seed":
+            out["seed"] = _int(v)
+        elif k == "steps":
+            out["steps"] = _int(v)
+        elif k in ("cfg scale", "guidance", "cfg"):
+            out["guidance"] = _float(v)
+        elif k == "sampler":
+            out["sampler"] = v
+        elif k == "size":
+            out["size"] = v
+        elif k == "model":
+            out["model"] = v
+    return out
+
+
+def _ui_read_meta(path):
+    """PNG Info: lit le prompt + les parametres embarques d'une image (crispz JSON,
+    A1111/Civitai 'parameters', ComfyUI, ou EXIF). Renvoie (markdown, dict parse)."""
+    empty = "*Upload an image to read its embedded prompt & parameters.*"
+    if not path or not os.path.isfile(path):
+        return empty, {}
+    meta = dict(_read_image_meta(path) or {})   # sidecar + chunk 'crispz' + EXIF
+    scheme = "crispz" if meta.get("prompt") else None
+    if not meta.get("prompt"):
+        try:
+            with Image.open(path) as im:
+                info = im.info or {}
+        except Exception:
+            info = {}
+        if info.get("parameters"):              # A1111 / Civitai
+            meta.update(_parse_a1111_params(info["parameters"]))
+            scheme = "a1111"
+        elif info.get("prompt"):                # ComfyUI (workflow json, brut)
+            meta["prompt"] = str(info.get("prompt"))[:2000]
+            scheme = "comfyui"
+    if not meta.get("prompt") and not meta.get("negative"):
+        return "*No embedded prompt/metadata found in this image.*", {}
+    lines = [f"*Detected scheme: **{scheme or 'unknown'}***"]
+    if meta.get("prompt"):
+        lines.append(f"**Prompt**\n\n{meta['prompt']}")
+    if meta.get("negative"):
+        lines.append(f"**Negative**\n\n{meta['negative']}")
+    kv = [f"{k}: {meta[k]}" for k in ("seed", "steps", "guidance", "sampler", "size", "model", "mode")
+          if meta.get(k) not in (None, "")]
+    if kv:
+        lines.append("**Params** — " + "  ·  ".join(kv))
+    return "\n\n".join(lines), meta
+
+
+# ============================ Presets (facon Fooocus) =========================
+# Un preset = un bundle de reglages (prompt, styles, taille, steps/CFG, sampler,
+# checkpoint, transformer, LoRAs) sauve en JSON dans presets/. Charger / creer / mettre
+# a jour / supprimer depuis l'onglet Settings.
+_PRESETS_DIR = os.path.join(HERE, "presets")
+_PRESET_KEYS = ["prompt", "negative", "styles", "width", "height", "steps", "guidance",
+                "sampler", "schedule", "image_number", "checkpoint", "transformer"]
+
+
+def _preset_sanitize(name):
+    n = "".join(c for c in (name or "") if c.isalnum() or c in " -_").strip()
+    return n or "preset"
+
+
+def list_presets():
+    try:
+        return sorted(f[:-5] for f in os.listdir(_PRESETS_DIR) if f.lower().endswith(".json"))
+    except Exception:
+        return []
+
+
+def _load_preset_file(name):
+    try:
+        with open(os.path.join(_PRESETS_DIR, _preset_sanitize(name) + ".json"), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _ensure_model_presets(checkpoints):
+    """Cree un preset 'basique' presets/<stem>.json pour chaque checkpoint LOCAL
+    chargeable (issu de list_checkpoints) qui n'en a pas encore. steps/CFG deduits par
+    profile_for_model (comme la selection d'un modele), le reste = defauts de config.
+    Ne modifie JAMAIS un preset existant. Renvoie le nombre de presets crees.
+    Appele au demarrage et a chaque refresh/filtrage des checkpoints."""
+    created = 0
+    try:
+        existing = set(list_presets())
+    except Exception:
+        existing = set()
+    for f in checkpoints or []:
+        # Ignore les repos de base HF (Tongyi-MAI/...) : ce ne sont pas des fichiers locaux.
+        if not isinstance(f, str) or f in ZIMAGE_BASE_REPOS or "/" in f or "\\" in f:
+            continue
+        name = _preset_sanitize(os.path.splitext(f)[0])
+        if name in existing:
+            continue
+        steps, g = profile_for_model(f)
+        data = {
+            "prompt": "",
+            "negative": CONFIG.get("default_negative_prompt", "") or "",
+            "styles": list(CONFIG.get("default_styles", []) or []),
+            "width": int(CONFIG.get("default_width", 1024)),
+            "height": int(CONFIG.get("default_height", 1024)),
+            "steps": steps, "guidance": g,
+            "sampler": (CONFIG.get("default_sampler") or "euler").strip().lower(),
+            "schedule": (CONFIG.get("default_schedule") or "sgm_uniform").strip().lower(),
+            "image_number": int(CONFIG.get("default_image_number", 1)),
+            "checkpoint": f, "transformer": "", "loras": [],
+        }
+        try:
+            os.makedirs(_PRESETS_DIR, exist_ok=True)
+            with open(os.path.join(_PRESETS_DIR, name + ".json"), "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+            existing.add(name)
+            created += 1
+        except Exception as e:
+            _dbg(f"auto-preset failed for {f}: {e}")
+    if created:
+        _log(f"presets: auto-created {created} basic model preset(s)")
+    return created
+
+
+def _ui_preset_save(name, *vals):
+    """Sauve l'etat courant sous 'name'. vals = scalaires (_PRESET_KEYS) + lora_dds + lora_lws."""
+    name = _preset_sanitize(name)
+    nk = len(_PRESET_KEYS)
+    scalars, lora_vals = vals[:nk], vals[nk:]
+    half = len(lora_vals) // 2
+    dds, lws = lora_vals[:half], lora_vals[half:]
+    data = {k: v for k, v in zip(_PRESET_KEYS, scalars)}
+    data["loras"] = [[dds[i], float(lws[i])] for i in range(half)
+                     if dds[i] and dds[i] not in ("None", "none", "")]
+    try:
+        os.makedirs(_PRESETS_DIR, exist_ok=True)
+        with open(os.path.join(_PRESETS_DIR, name + ".json"), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return gr.update(), f"Save failed: {e}"
+    return gr.update(choices=list_presets(), value=name), f"Preset '{name}' saved."
+
+
+def _ui_preset_load(name):
+    """Renvoie les gr.update pour tous les composants (scalaires + 10 LoRA dd + 10 poids)."""
+    data = _load_preset_file(name)
+    scal = [gr.update(value=data[k]) if k in data else gr.update() for k in _PRESET_KEYS]
+    loras = data.get("loras", []) or []
+    dd_up = [gr.update(value=(loras[i][0] if i < len(loras) else "None")) for i in range(MAX_LORA_SLOTS)]
+    w_up = [gr.update(value=(float(loras[i][1]) if i < len(loras) else float(cz_pipeline.LORA_WEIGHT)))
+            for i in range(MAX_LORA_SLOTS)]
+    return scal + dd_up + w_up
+
+
+def _ui_preset_delete(name):
+    try:
+        p = os.path.join(_PRESETS_DIR, _preset_sanitize(name) + ".json")
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception as e:
+        return gr.update(), f"Delete failed: {e}"
+    return gr.update(choices=list_presets(), value=None), f"Deleted '{_preset_sanitize(name)}'."
+
+
+def _ui_apply_ckpt_silent(name):
+    """Applique le checkpoint SANS toucher steps/guidance (le preset les a deja poses)."""
+    try:
+        return _apply_checkpoint(name)[0]
+    except Exception as e:
+        return f"Checkpoint apply failed: {e}"
+
+
+def _ui_apply_transformer_silent(repo):
+    if not (repo or "").strip():
+        return gr.update()
+    try:
+        return _apply_transformer_repo(repo)[0]
+    except Exception as e:
+        return f"Transformer apply failed: {e}"
+
+
 def build_ui():
     models = list_esrgan_models()
     default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else (models[0] if models else None)
@@ -1349,7 +2363,8 @@ def build_ui():
     # Omni (multi-reference) propose seulement si un modele Omni/Edit est configure.
     omni_on = bool((cz_pipeline.OMNI_MODEL or "").strip())
 
-    with gr.Blocks(title="crispz-studio", theme=gr.themes.Default(), css=FOOOCUS_CSS, js=js_full) as demo:
+    with gr.Blocks(title=f"crispz-studio {APP_VERSION}", theme=gr.themes.Default(), css=FOOOCUS_CSS,
+                   js=js_full, head=_tagac_head()) as demo:
         # La galerie du dossier de sortie s'ouvre dans un nouvel onglet (Asset Browser),
         # via le bouton sous l'apercu. Pas de panneau galerie inline.
         gallery_url = gr.Textbox(visible=False)
@@ -1358,6 +2373,27 @@ def build_ui():
         del_out = gr.Textbox(visible=False)
         del_btn = gr.Button(visible=False)
         del_btn.click(delete_asset, del_in, del_out, api_name="delete_asset")
+        # Endpoint API CivitAI (Asset Browser -> preview/trigger words/exemples d'un modele)
+        cf_rel = gr.Textbox(visible=False)
+        cf_kind = gr.Textbox(visible=False)
+        cf_out = gr.Textbox(visible=False)
+        cf_btn = gr.Button(visible=False)
+        cf_btn.click(_api_civitai_fetch, [cf_rel, cf_kind], cf_out, api_name="civitai_fetch")
+        # Endpoint de progression (polling par l'Asset Browser pendant le fetch CivitAI)
+        cp_in = gr.Textbox(visible=False)
+        cp_out = gr.Textbox(visible=False)
+        cp_btn = gr.Button(visible=False)
+        cp_btn.click(_api_job_progress, cp_in, cp_out, api_name="job_progress")
+        # Endpoint batch (bouton 'Fetch all missing' de l'Asset Browser)
+        cfa_in = gr.Textbox(visible=False)
+        cfa_out = gr.Textbox(visible=False)
+        cfa_btn = gr.Button(visible=False)
+        cfa_btn.click(_api_civitai_fetch_all, cfa_in, cfa_out, api_name="civitai_fetch_all")
+        # Endpoint rebuild des miniatures (bouton 'Rebuild thumbnails' de l'Asset Browser)
+        tr_in = gr.Textbox(visible=False)
+        tr_out = gr.Textbox(visible=False)
+        tr_btn = gr.Button(visible=False)
+        tr_btn.click(_api_thumbs_rebuild, tr_in, tr_out, api_name="thumbs_rebuild")
 
         with gr.Row():
             # ===== Colonne principale (apercu en haut, prompt + Generate, negative, input) =====
@@ -1404,6 +2440,46 @@ def build_ui():
                     improve_btn = gr.Button("Improve prompt", scale=1, min_width=150)
                 improve_status = gr.Markdown("")
 
+                if JOB_QUEUE_ENABLED:
+                    queue_state = gr.State([])
+                    with gr.Accordion("Job queue", open=False):
+                        gr.Markdown("*'+ Queue' snapshots ALL current settings (incl. model, "
+                                    "LoRAs, sampler). 'Run queue' executes jobs in order; "
+                                    "**Stop** pauses the queue — remaining jobs are kept.*")
+                        with gr.Row():
+                            queue_add_btn = gr.Button("+ Queue (0)", size="sm", scale=1, min_width=140)
+                            queue_run_btn = gr.Button("Run queue", variant="primary", size="sm",
+                                                      scale=1, min_width=140)
+                        queue_md = gr.Markdown("*Queue empty.*")
+                        with gr.Row():
+                            queue_sel = gr.Dropdown([], label="Selected job", scale=4)
+                            queue_up_btn = gr.Button("Up", size="sm", scale=0, min_width=60)
+                            queue_down_btn = gr.Button("Down", size="sm", scale=0, min_width=70)
+                            queue_rm_btn = gr.Button("Remove", size="sm", scale=0, min_width=90)
+                            queue_clear_btn = gr.Button("Clear", size="sm", scale=0, min_width=70)
+
+                if XYZ_ENABLED:
+                    with gr.Accordion("X/Y/Z grid", open=False):
+                        gr.Markdown("*Vary 1–3 parameters (comma-separated values; use quotes to "
+                                    "protect commas). Each combo becomes a queued job; when it has "
+                                    "run, an annotated contact sheet is saved (one per Z value) and "
+                                    "shown in the gallery. Prompt S/R: first value = search term, "
+                                    "then its replacements.*")
+                        _ax = [k for k in _XYZ_AXES]
+                        _xyz_rows = []
+                        for _axis_lbl, _default in (("X", "Steps"), ("Y", "(none)"), ("Z", "(none)")):
+                            with gr.Row():
+                                _dd = gr.Dropdown(_ax, value=_default, label=f"{_axis_lbl} axis",
+                                                  scale=1)
+                                _tb = gr.Textbox(label=f"{_axis_lbl} values", scale=3,
+                                                 placeholder=_xyz_suggestions(_default)[1])
+                                _sg = (gr.Button("⤵ suggest", size="sm", scale=0, min_width=90)
+                                       if XYZ_SUGGEST else None)
+                                _xyz_rows.append((_dd, _tb, _sg))
+                        (xyz_xa, xyz_xv, xyz_xs), (xyz_ya, xyz_yv, xyz_ys), (xyz_za, xyz_zv, xyz_zs) = _xyz_rows
+                        xyz_build_btn = gr.Button("Build grid → queue", variant="primary", size="sm")
+                        xyz_status = gr.Markdown("")
+
                 with gr.Row():
                     use_input = gr.Checkbox(value=False, label="Input Image", min_width=160)
                     advanced_cb = gr.Checkbox(value=False, label="Advanced", min_width=160)
@@ -1435,6 +2511,20 @@ def build_ui():
                                                         label="Refine denoise (strength) - 0 = skip refine (ESRGAN only)")
                                     refine_steps = gr.Slider(4, 30, value=DEFAULT_STEPS, step=1,
                                                              label="Refine steps (runs at upscaled res -> higher = slower)")
+                            with gr.Accordion("\U0001F4C4 Read prompt / metadata from an image (PNG Info)",
+                                              open=False):
+                                gr.Markdown("*Drop a PNG/JPG to read its embedded prompt & parameters "
+                                            "(crispz, A1111/Civitai, or EXIF), then send them to the fields.*")
+                                meta_reader = gr.Image(type="filepath", sources=["upload", "clipboard"],
+                                                       height=150,
+                                                       label="Image to read")
+                                input_meta_md = gr.Markdown(
+                                    "*Upload an image above to read its prompt & parameters.*")
+                                meta_state = gr.State({})
+                                with gr.Row():
+                                    meta_to_prompt_btn = gr.Button("→ Send prompt", size="sm",
+                                                                   variant="primary")
+                                    meta_to_seed_btn = gr.Button("→ Send seed", size="sm")
                             with gr.Accordion("ESRGAN tiling (VRAM)", open=False):
                                 tile = gr.Slider(0, 1024, value=DEFAULT_TILE, step=8, label="Tile (0 = off)")
                                 overlap = gr.Slider(0, 128, value=DEFAULT_OVERLAP, step=8, label="Overlap")
@@ -1560,6 +2650,25 @@ def build_ui():
             with gr.Column(scale=2, visible=False) as advanced_col:
                 with gr.Tabs():
                     with gr.Tab("Settings"):
+                        with gr.Accordion("⭐ Presets", open=False):
+                            gr.Markdown("*A preset bundles prompt, styles, size, steps/CFG, "
+                                        "sampler, checkpoint, transformer + LoRAs. Load applies "
+                                        "them (incl. the model). Create/Update save the current state.*")
+                            # Auto-cree un preset basique par modele local avant de peupler
+                            # le menu (les modeles FP8/INT8-INT4 sont deja exclus par la liste).
+                            _ensure_model_presets(list_checkpoints())
+                            with gr.Row():
+                                preset_dd = gr.Dropdown(list_presets(), label="Preset", scale=3)
+                                preset_refresh_btn = gr.Button("↻", size="sm", scale=0, min_width=44)
+                                preset_load_btn = gr.Button("Load", size="sm", variant="primary", scale=1)
+                            with gr.Row():
+                                preset_name_tb = gr.Textbox(show_label=False, scale=2, container=False,
+                                                            placeholder="new preset name")
+                                preset_save_btn = gr.Button("Save as new", size="sm", scale=1)
+                                preset_update_btn = gr.Button("Update selected", size="sm", scale=1)
+                                preset_delete_btn = gr.Button("Delete", size="sm", variant="stop",
+                                                              scale=0, min_width=80)
+                            preset_status = gr.Markdown("")
                         performance = gr.Radio(list(PERFORMANCE),
                                                value=CONFIG.get("default_performance", "Turbo (8 steps)"),
                                                label="Performance",
@@ -1605,6 +2714,12 @@ def build_ui():
                                                  step=1, label="Image number (batch)")
                         seed = gr.Number(value=int(CONFIG.get("default_seed", -1)),
                                          label="Seed (-1 = random)", precision=0)
+                        with gr.Row():
+                            reuse_seed_btn = gr.Button("♻️ Reuse last seed", size="sm",
+                                                       scale=1, min_width=140)
+                            no_seed_inc_cb = gr.Checkbox(
+                                value=False, scale=1, label="Fix seed (no +1 per image)",
+                                info="Batch reuses the same seed for every image (no increment).")
 
                     with gr.Tab("Styles"):
                         style_search = gr.Textbox(show_label=False, container=False,
@@ -1642,21 +2757,7 @@ def build_ui():
                         log_level_status = gr.Markdown("")
 
                     with gr.Tab("Models"):
-                        gr.Markdown("### Hugging Face access (gated models)")
-                        with gr.Row():
-                            hf_token_tb = gr.Textbox(
-                                value="", type="password", scale=3, label="HF token",
-                                placeholder="hf_... (for gated models, e.g. FLUX.1-Krea-dev)",
-                                info="Saved to preferences.json (gitignored) and applied immediately. "
-                                     "Leave empty to keep the current token.")
-                            hf_token_save_btn = gr.Button("Save token", size="sm", scale=1, variant="primary")
-                        hf_token_status = gr.Markdown(
-                            "✅ A Hugging Face token is currently set."
-                            if hf_token_is_set() else
-                            "No HF token set (only needed for gated models).")
-
-                        offload = gr.Dropdown(choices=list(cz_pipeline.OFFLOAD_CHOICES),
-                                              value=cz_pipeline.OFFLOAD_MODE,
+                        offload = gr.Dropdown(choices=list(cz_pipeline.OFFLOAD_CHOICES), value="none",
                                               label="CPU offload (VRAM)",
                                               info="How much of the model to move to CPU RAM to save VRAM. Details below.")
                         with gr.Accordion("ℹ️  What is CPU offload?", open=False):
@@ -1671,90 +2772,100 @@ def build_ui():
                                 "- **sequential** — aggressive, module-by-module. Runs in ~9GB but much slower "
                                 "(5–10×). For small cards (8–12GB).")
 
-                        gr.Markdown("### Checkpoints (switch FLUX model, like ESRGAN)")
-                        ckpt_dir_tb = gr.Textbox(value=cz_pipeline.CHECKPOINTS_DIR, label="Checkpoints folder")
-                        ckpt_extra_dir_tb = gr.Textbox(
-                            value=cz_pipeline.CHECKPOINTS_EXTRA_DIR,
-                            label="Extra checkpoints folder (optional)",
-                            placeholder="e.g. D:\\models\\FLUX",
-                            info="Merged into the single 'FLUX checkpoint' list above. Leave empty to disable. "
-                                 "Note: ComfyUI FP8 single-files are skipped (diffusers can't load FP8).")
-                        esrgan_dir_tb = gr.Textbox(value=cz_esrgan.ESRGAN_DIR,
-                                                   label="ESRGAN_DIR (.pth/.safetensors folder)")
-                        with gr.Row():
-                            refresh_btn = gr.Button("Refresh ESRGAN", size="sm")
-                            save_paths_btn = gr.Button("Save paths", size="sm")
-                        paths_status = gr.Markdown("")
-                        with gr.Row():
-                            _ckpt_choices = ZIMAGE_BASE_REPOS + list_checkpoints()
-                            _ckpt_value = cz_pipeline.BASE_REPO if cz_pipeline.BASE_REPO in _ckpt_choices else ZIMAGE_BASE_REPOS[0]
-                            ckpt_dd = gr.Dropdown(choices=_ckpt_choices,
-                                                  value=_ckpt_value, label="FLUX checkpoint", scale=3)
-                            ckpt_refresh_btn = gr.Button("Refresh", size="sm", scale=1)
-                        ckpt_status = gr.Markdown("")
-                        with gr.Row():
-                            transformer_tb = gr.Textbox(
-                                value="", scale=3,
-                                label="Transformer override (HF repo / diffusers folder)",
-                                placeholder="e.g. a diffusers FLUX transformer repo/folder",
-                                info="Loads only the transformer, keeps the base VAE/encoders "
-                                     "(base = FLUX.1-Krea-dev). For diffusers-format weights only "
-                                     "(ComfyUI FP8 single-files are not supported).")
-                            transformer_apply_btn = gr.Button("Apply override", size="sm", scale=1, variant="secondary")
+                        with gr.Accordion("\U0001F4E6 Checkpoints (switch model)", open=True):
+                            ckpt_dir_tb = gr.Textbox(value=cz_pipeline.CHECKPOINTS_DIR, label="Checkpoints folder")
+                            ckpt_extra_dir_tb = gr.Textbox(
+                                value=cz_pipeline.CHECKPOINTS_EXTRA_DIR,
+                                label="Extra checkpoints folder (optional)",
+                                placeholder="e.g. D:\\models\\Z-Image",
+                                info="Merged into the single 'FLUX checkpoint' list above. Leave empty to disable.")
+                            esrgan_dir_tb = gr.Textbox(value=cz_esrgan.ESRGAN_DIR,
+                                                       label="ESRGAN_DIR (.pth/.safetensors folder)")
+                            with gr.Row():
+                                refresh_btn = gr.Button("Refresh ESRGAN", size="sm")
+                                save_paths_btn = gr.Button("Save paths", size="sm")
+                            paths_status = gr.Markdown("")
+                            with gr.Row():
+                                _ckpt_choices = ZIMAGE_BASE_REPOS + list_checkpoints()
+                                _ckpt_value = cz_pipeline.BASE_REPO if cz_pipeline.BASE_REPO in _ckpt_choices else ZIMAGE_BASE_REPOS[0]
+                                ckpt_dd = gr.Dropdown(choices=_ckpt_choices,
+                                                      value=_ckpt_value, label="FLUX checkpoint", scale=3)
+                                ckpt_open_btn = gr.Button("\U0001F5BC️", size="sm", scale=0, min_width=44,
+                                                          elem_id="cz_ckpt_open")
+                                ckpt_refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+                            ckpt_status = gr.Markdown("")
+                            with gr.Row():
+                                transformer_tb = gr.Textbox(
+                                    value="", scale=3,
+                                    label="Transformer override (HF repo / diffusers folder)",
+                                    placeholder="e.g. RunDiffusion/Juggernaut-Z-Image",
+                                    info="For community models with an incomplete tokenizer (Juggernaut-Z): "
+                                         "loads only the transformer, keeps base VAE/encoder. Set base = Turbo.")
+                                transformer_apply_btn = gr.Button("Apply override", size="sm", scale=1,
+                                                                  variant="secondary")
 
-                        gr.Markdown("### LoRA (up to 3, combinable)")
-                        lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
-                        _lchoices = ["None"] + list_loras()
-                        with gr.Row():
-                            lora_dd1 = gr.Dropdown(choices=_lchoices, value="None", label="LoRA 1", scale=3)
-                            lw1 = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT), step=0.05,
-                                            label="Weight 1", scale=2)
-                        with gr.Row():
-                            lora_dd2 = gr.Dropdown(choices=_lchoices, value="None", label="LoRA 2", scale=3)
-                            lw2 = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT), step=0.05,
-                                            label="Weight 2", scale=2)
-                        with gr.Row():
-                            lora_dd3 = gr.Dropdown(choices=_lchoices, value="None", label="LoRA 3", scale=3)
-                            lw3 = gr.Slider(0.0, 2.0, value=float(cz_pipeline.LORA_WEIGHT), step=0.05,
-                                            label="Weight 3", scale=2)
-                        lora_refresh_btn = gr.Button("Refresh LoRA list", size="sm")
-                        lora_keywords_tb = gr.Textbox(label="Keywords / trigger words", lines=2,
-                                                      placeholder="Auto-filled from the selected LoRA(s).")
-                        with gr.Row():
-                            lora_kw_btn = gr.Button("Get keywords", size="sm")
-                            lora_kw_to_prompt_btn = gr.Button("Add to prompt", size="sm", variant="primary")
-                        lora_status = gr.Markdown("")
+                        with gr.Accordion("\U0001F9E9 LoRA (combinable)", open=False):
+                            lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
+                            gr.Markdown(
+                                "*Number of slots is set in Advanced > Generation "
+                                "(LoRA slots), or config `lora_slots`. Weight range is "
+                                f"`{cz_pipeline.LORA_WEIGHT_MIN:g}..{cz_pipeline.LORA_WEIGHT_MAX:g}` "
+                                "(config `lora_weight_min` / `lora_weight_max`) — a "
+                                "**negative** weight inverts the LoRA's effect.*")
+                            _lchoices = ["None"] + list_loras()
+                            lora_dds, lora_lws, lora_rows, lora_open_btns = [], [], [], []
+                            for _i in range(MAX_LORA_SLOTS):
+                                with gr.Row(visible=(_i < LORA_SLOTS)) as _row:
+                                    _dd = gr.Dropdown(choices=_lchoices, value="None",
+                                                      label=f"LoRA {_i + 1}", scale=3)
+                                    _ob = gr.Button("\U0001F5BC️", size="sm", scale=0, min_width=44)
+                                    _lw = gr.Slider(cz_pipeline.LORA_WEIGHT_MIN,
+                                                    cz_pipeline.LORA_WEIGHT_MAX,
+                                                    value=float(cz_pipeline.LORA_WEIGHT),
+                                                    step=0.05, label=f"Weight {_i + 1}", scale=2)
+                                lora_dds.append(_dd)
+                                lora_lws.append(_lw)
+                                lora_rows.append(_row)
+                                lora_open_btns.append(_ob)
+                            lora_refresh_btn = gr.Button("Refresh LoRA list", size="sm")
+                            lora_keywords_tb = gr.Textbox(label="Keywords / trigger words", lines=2,
+                                                          placeholder="Auto-filled from the selected LoRA(s).")
+                            with gr.Row():
+                                lora_kw_btn = gr.Button("Get keywords", size="sm")
+                                lora_kw_to_prompt_btn = gr.Button("Add to prompt", size="sm", variant="primary")
+                            lora_status = gr.Markdown("")
 
-                        gr.Markdown("### \U0001F3B2 Wildcards")
-                        gr.Markdown("*`__name__` in the prompt -> a random line from name.txt "
-                                    "(nested, reproducible per seed). Pick a file to view/edit it, "
-                                    "Insert to add it to the prompt, or Create a new one.*")
-                        wild_dir_tb = gr.Textbox(value=cz_prompt.WILDCARDS_DIR, label="Wildcards folder")
-                        with gr.Row():
-                            wild_dd = gr.Dropdown(["None"] + list_wildcards(), value="None",
-                                                  label="Wildcard file", scale=3)
-                            wild_refresh_btn = gr.Button("Refresh", size="sm", scale=1, min_width=90)
-                            wild_insert_btn = gr.Button("Insert __name__", size="sm", scale=1,
-                                                        variant="primary", min_width=140)
-                        wild_editor = gr.Textbox(label="Contents (one option per line)", lines=8,
-                                                 placeholder="Select a file above to view/edit, "
-                                                             "or type lines for a new one.")
-                        with gr.Row():
-                            wild_save_btn = gr.Button("Save", size="sm")
-                            wild_new_name = gr.Textbox(show_label=False, scale=2, container=False,
-                                                       placeholder="new_wildcard_name (no extension)")
-                            wild_create_btn = gr.Button("Create new", size="sm", variant="primary")
-                        wild_status = gr.Markdown("")
+                        with gr.Accordion("\U0001F3B2 Wildcards", open=False):
+                            gr.Markdown("*`__name__` in the prompt -> a random line from name.txt "
+                                        "(nested, reproducible per seed). Pick a file to view/edit it, "
+                                        "Insert to add it to the prompt, or Create a new one.*")
+                            wild_dir_tb = gr.Textbox(value=cz_prompt.WILDCARDS_DIR, label="Wildcards folder")
+                            with gr.Row():
+                                wild_dd = gr.Dropdown(["None"] + list_wildcards(), value="None",
+                                                      label="Wildcard file", scale=3)
+                                wild_refresh_btn = gr.Button("Refresh", size="sm", scale=1, min_width=90)
+                                wild_insert_btn = gr.Button("Insert __name__", size="sm", scale=1,
+                                                            variant="primary", min_width=140)
+                            wild_editor = gr.Textbox(label="Contents (one option per line)", lines=8,
+                                                     placeholder="Select a file above to view/edit, "
+                                                                 "or type lines for a new one.")
+                            with gr.Row():
+                                wild_save_btn = gr.Button("Save", size="sm")
+                                wild_new_name = gr.Textbox(show_label=False, scale=2, container=False,
+                                                           placeholder="new_wildcard_name (no extension)")
+                                wild_create_btn = gr.Button("Create new", size="sm", variant="primary")
+                            wild_status = gr.Markdown("")
 
-                        gr.Markdown("### Edit / reference model (not used by Krea)")
-                        gr.Markdown("*crispz-krea runs **FLUX.1 Krea**, a text-to-image model with "
-                                    "no instruction-edit pipeline. For image editing use the "
-                                    "**crispz-qwen-edit** variant. For a reference image here, use img2img.*")
-                        omni_model_tb = gr.Textbox(value=CONFIG.get("zimage_omni_model", ""),
-                                                   label="Edit model (not applicable for Krea)",
-                                                   info="Krea is text-to-image only; this field is ignored.")
-                        omni_check_btn = gr.Button("Check Edit availability", size="sm")
-                        omni_status = gr.Markdown("")
+                        with gr.Accordion("\U0001F5BC️ Omni / Edit (multi-reference)", open=False):
+                            gr.Markdown("*The Reference (Omni) tab stays hidden until a model is set "
+                                        "here (then restart). Z-Image-Omni-Base / Z-Image-Edit are not "
+                                        "released yet. For a reference image now, use img2img.*")
+                            omni_model_tb = gr.Textbox(value=CONFIG.get("zimage_omni_model", ""),
+                                                       label="Omni model (HF repo or local folder)",
+                                                       info="Needs SigLIP. Set it then restart to enable "
+                                                            "the Reference (Omni) tab.")
+                            omni_check_btn = gr.Button("Check Omni availability (Hugging Face)", size="sm")
+                            omni_status = gr.Markdown("")
 
                     with gr.Tab("Save"):
                         save_mode = gr.Radio(choices=["display", "local", "alongside", "custom"],
@@ -1784,9 +2895,74 @@ def build_ui():
                         ab_open_link = gr.HTML("")
                         ab_status = gr.Markdown("")
 
+                    with gr.Tab("Advanced"):
+                        gr.Markdown("### Hugging Face access (gated models)")
+                        with gr.Row():
+                            hf_token_tb = gr.Textbox(
+                                value="", type="password", scale=3, label="HF token",
+                                placeholder="hf_... (for gated models, e.g. FLUX.1-Krea-dev)",
+                                info="Saved to preferences.json (gitignored) and applied immediately. "
+                                     "Leave empty to keep the current token.")
+                            hf_token_save_btn = gr.Button("Save token", size="sm", scale=1, variant="primary")
+                        hf_token_status = gr.Markdown(
+                            "✅ A Hugging Face token is currently set."
+                            if hf_token_is_set() else
+                            "No HF token set (only needed for gated models).")
+
+                        gr.Markdown("### CivitAI access (previews / trigger words)")
+                        with gr.Row():
+                            civitai_key_tb = gr.Textbox(
+                                value="", type="password", scale=3, label="CivitAI API key",
+                                placeholder="CivitAI token (optional)",
+                                info="Saved to preferences.json (gitignored). Used by 'Fetch from "
+                                     "CivitAI' in the Asset Browser. Public models work without a key; "
+                                     "a key unlocks gated/NSFW previews and avoids rate limits.")
+                            civitai_key_save_btn = gr.Button("Save key", size="sm", scale=1,
+                                                             variant="primary")
+                        civitai_key_status = gr.Markdown(
+                            "✅ A CivitAI key is set." if cz_civitai.API_KEY
+                            else "No CivitAI key set (public models still work).")
+
+                        gr.Markdown("### Metadata")
+                        meta_scheme_dd = gr.Dropdown(
+                            choices=[("crispz (json)", "crispz"),
+                                     ("a1111 (plain text — Civitai-compatible)", "a1111")],
+                            value=(CONFIG.get("metadata_scheme") or "crispz").lower(),
+                            label="Metadata scheme (PNG output)",
+                            info="a1111 adds a 'parameters' chunk to PNGs so Civitai reads the "
+                                 "prompt/seed/params. crispz metadata (chunk + sidecar) is kept in both.")
+                        meta_scheme_status = gr.Markdown("")
+
+                        gr.Markdown("### Generation")
+                        wildcards_order_cb = gr.Checkbox(
+                            value=bool(CONFIG.get("wildcards_in_order", False)),
+                            label="Read wildcards in order",
+                            info="Batch: each image takes the NEXT line of the wildcard file "
+                                 "(deterministic) instead of a random one.")
+                        wild_order_status = gr.Markdown("")
+                        save_pre_upscale_cb = gr.Checkbox(
+                            value=bool(CONFIG.get("save_pre_upscale", False)),
+                            label="Also save pre-upscale image",
+                            info="In txt2img + auto-upscale, also save the original txt2img image "
+                                 "(before ESRGAN/refine), tagged 'txt2img'.")
+                        lora_slots_num = gr.Slider(1, MAX_LORA_SLOTS, value=LORA_SLOTS, step=1,
+                                                   label="LoRA slots (Models > LoRA)",
+                                                   info="How many LoRA slots to show. Applied live and "
+                                                        "persisted (preferences.json).")
+
         # Toggles facon Fooocus
         advanced_cb.change(lambda v: gr.update(visible=bool(v)), advanced_cb, advanced_col)
         use_input.change(lambda v: gr.update(visible=bool(v)), use_input, input_group)
+        # PNG Info: lire les meta d'une image + les envoyer aux champs
+        meta_reader.change(_ui_read_meta, [meta_reader], [input_meta_md, meta_state])
+        meta_to_prompt_btn.click(
+            lambda m: (gr.update(value=(m or {}).get("prompt", "")),
+                       gr.update(value=(m or {}).get("negative", ""))),
+            [meta_state], [prompt, negative])
+        meta_to_seed_btn.click(
+            lambda m: gr.update(value=int((m or {}).get("seed"))) if (m or {}).get("seed") is not None
+            else gr.update(),
+            [meta_state], [seed])
         aspect.change(_set_aspect, [aspect], [width, height]) \
               .then(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
         force_ratio_cb.change(_ui_set_force_ratio, [force_ratio_cb, aspect], None)
@@ -1795,6 +2971,12 @@ def build_ui():
 
         # Actions
         hf_token_save_btn.click(_save_hf_token, [hf_token_tb], [hf_token_tb, hf_token_status])
+        civitai_key_save_btn.click(_save_civitai_key, [civitai_key_tb],
+                                   [civitai_key_tb, civitai_key_status])
+        meta_scheme_dd.change(set_metadata_scheme, [meta_scheme_dd], [meta_scheme_status])
+        wildcards_order_cb.change(set_wildcards_in_order, [wildcards_order_cb], [wild_order_status])
+        save_pre_upscale_cb.change(cz_pipeline.set_save_pre_upscale, [save_pre_upscale_cb], None)
+        lora_slots_num.change(_ui_set_lora_slots, [lora_slots_num], lora_rows)
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         save_paths_btn.click(_save_paths_to_prefs,
                              [esrgan_dir_tb, ckpt_dir_tb, ckpt_extra_dir_tb, lora_dir_tb, wild_dir_tb],
@@ -1805,20 +2987,35 @@ def build_ui():
         wild_save_btn.click(_ui_wild_save, [wild_dd, wild_editor], [wild_status])
         wild_create_btn.click(_ui_wild_create, [wild_new_name, wild_editor],
                               [wild_dd, wild_status, wild_new_name])
-        ckpt_refresh_btn.click(_refresh_checkpoints, [ckpt_dir_tb, ckpt_extra_dir_tb], [ckpt_dd, ckpt_status])
+        ckpt_refresh_btn.click(_refresh_checkpoints, [ckpt_dir_tb, ckpt_extra_dir_tb],
+                               [ckpt_dd, ckpt_status, preset_dd])
         ckpt_dd.change(_apply_checkpoint, [ckpt_dd], [ckpt_status, gen_steps, guidance, performance])
         transformer_apply_btn.click(_apply_transformer_repo, [transformer_tb],
                                     [ckpt_status, gen_steps, guidance, performance])
-        lora_refresh_btn.click(_refresh_loras, [lora_dir_tb],
-                               [lora_dd1, lora_dd2, lora_dd3, lora_status])
-        _lora_slots = [lora_dd1, lw1, lora_dd2, lw2, lora_dd3, lw3]
-        for _c in (lora_dd1, lora_dd2, lora_dd3):
+        lora_refresh_btn.click(_refresh_loras, [lora_dir_tb], lora_dds + [lora_status])
+        # slots entrelaces: dd1, lw1, dd2, lw2, ... (attendu par _apply_loras/_ui_loras_apply)
+        _lora_slots = [c for _pair in zip(lora_dds, lora_lws) for c in _pair]
+        for _c in lora_dds:
             _c.change(_ui_loras_apply, _lora_slots, [lora_status, lora_keywords_tb])
-        for _c in (lw1, lw2, lw3):
+        for _c in lora_lws:
             _c.change(_apply_loras, _lora_slots, [lora_status])
-        lora_kw_btn.click(_ui_loras_keywords, [lora_dd1, lora_dd2, lora_dd3],
+        lora_kw_btn.click(_ui_loras_keywords, lora_dds,
                           [lora_keywords_tb, lora_status])
         lora_kw_to_prompt_btn.click(_ui_kw_to_prompt, [prompt, lora_keywords_tb], [prompt])
+        # ----- Presets (Settings) -----
+        _preset_scalars = [prompt, negative, styles, width, height, gen_steps, guidance,
+                           sampler_dd, schedule_dd, image_number, ckpt_dd, transformer_tb]
+        _preset_io = _preset_scalars + lora_dds + lora_lws
+        preset_refresh_btn.click(lambda: gr.update(choices=list_presets()), None, [preset_dd])
+        preset_load_btn.click(_ui_preset_load, [preset_dd], _preset_io) \
+            .then(_ui_apply_ckpt_silent, [ckpt_dd], [ckpt_status]) \
+            .then(_ui_apply_transformer_silent, [transformer_tb], [ckpt_status]) \
+            .then(_apply_loras, _lora_slots, [lora_status]) \
+            .then(set_sampler, [sampler_dd], None) \
+            .then(set_schedule, [schedule_dd], None)
+        preset_save_btn.click(_ui_preset_save, [preset_name_tb] + _preset_io, [preset_dd, preset_status])
+        preset_update_btn.click(_ui_preset_save, [preset_dd] + _preset_io, [preset_dd, preset_status])
+        preset_delete_btn.click(_ui_preset_delete, [preset_dd], [preset_dd, preset_status])
         omni_model_tb.change(lambda r: (set_omni_model(r), f"Omni model set: {r or '(none)'}")[1],
                              [omni_model_tb], [omni_status])
         omni_check_btn.click(_ui_check_omni, None, [omni_status])
@@ -1829,6 +3026,13 @@ def build_ui():
         # Open Asset Browser in a new tab (fast: manifest now, thumbnails in background).
         ab_open_btn.click(_ui_gallery_open, [output_dir], [ab_status, gallery_url]).then(
             None, [gallery_url], None, js="(u) => { if (u) window.open(u, '_blank'); }")
+        # Icones 🖼️: ouvrir l'Asset Browser centre sur le checkpoint / la LoRA selectionne(e).
+        _open_js = "(u) => { if (u) window.open(u, '_blank'); }"
+        ckpt_open_btn.click(lambda n: _asset_focus_url("models", n), [ckpt_dd],
+                            [ckpt_status, gallery_url]).then(None, [gallery_url], None, js=_open_js)
+        for _dd, _ob in zip(lora_dds, lora_open_btns):
+            _ob.click(lambda n: _asset_focus_url("loras", n), [_dd],
+                      [lora_status, gallery_url]).then(None, [gallery_url], None, js=_open_js)
         log_level_dd.change(set_log_level, [log_level_dd], [log_level_status])
         caption_model_dd.change(_ui_set_caption_model, [caption_model_dd], [caption_model_status])
         detect_btn.click(_ui_detect_ollama, [ollama_url], [ollama_model, ollama_status])
@@ -1870,6 +3074,9 @@ def build_ui():
         # scheduler choisi aux pipes en cache (pas de rechargement).
         sampler_dd.change(set_sampler, [sampler_dd], None)
         schedule_dd.change(set_schedule, [schedule_dd], None)
+        # Seed (facon Fooocus): reutiliser le seed concret du dernier rendu + fixer le seed.
+        reuse_seed_btn.click(lambda: gr.update(value=int(cz_pipeline._LAST_SEED)), None, [seed])
+        no_seed_inc_cb.change(cz_pipeline.set_no_seed_increment, [no_seed_inc_cb], None)
         _gen_inputs = [prompt, negative, styles, style_random, use_input, inp, input_mode,
                        ref1, ref2, ref3, ref4,
                        faceswap_enable, faceswap_src,
@@ -1879,6 +3086,27 @@ def build_ui():
                        history, auto_upscale_cb]
         _gen_outputs = [out, report, history, history_gallery]
         btn.click(_ui_generate, inputs=_gen_inputs, outputs=_gen_outputs)
+        if JOB_QUEUE_ENABLED:
+            _q_panel = [queue_state, queue_sel, queue_md, queue_add_btn]
+            queue_add_btn.click(_ui_queue_add, [*_gen_inputs, queue_state], _q_panel)
+            queue_up_btn.click(lambda it, s: _ui_queue_move(it, s, -1),
+                               [queue_state, queue_sel], _q_panel)
+            queue_down_btn.click(lambda it, s: _ui_queue_move(it, s, +1),
+                                 [queue_state, queue_sel], _q_panel)
+            queue_rm_btn.click(_ui_queue_remove, [queue_state, queue_sel], _q_panel)
+            queue_clear_btn.click(_ui_queue_clear, [queue_state], _q_panel)
+            queue_run_btn.click(_ui_queue_run, [queue_state, history],
+                                [*_q_panel, out, report, history, history_gallery])
+        if XYZ_ENABLED:
+            xyz_build_btn.click(_ui_xyz_build,
+                                [*_gen_inputs, xyz_xa, xyz_xv, xyz_ya, xyz_yv, xyz_za, xyz_zv,
+                                 queue_state],
+                                [*_q_panel, xyz_status])
+            if XYZ_SUGGEST:
+                for _dd, _tb, _sg in ((xyz_xa, xyz_xv, xyz_xs), (xyz_ya, xyz_yv, xyz_ys),
+                                      (xyz_za, xyz_zv, xyz_zs)):
+                    _dd.change(_ui_xyz_axis_changed, [_dd], [_tb])
+                    _sg.click(_ui_xyz_fill, [_dd, _tb], [_tb])
         # Clic sur une image du resultat -> bouton Download avec le vrai nom de fichier.
         out.select(_pick_download, None, [result_dl])
         # Vision Mix & Generate: fusionne les refs en un prompt, puis genere (txt2img).
@@ -1886,5 +3114,7 @@ def build_ui():
             _ui_compose, [cref1, cref2, cref3, cref4, ollama_model, ollama_url],
             [prompt, compose_status]
         ).then(_ui_generate, inputs=_gen_inputs, outputs=_gen_outputs)
+    global _DEMO
+    _DEMO = demo  # pour autoriser a la volee les dossiers de sortie changes dans l'UI
     return demo
 

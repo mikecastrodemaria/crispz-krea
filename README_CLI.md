@@ -35,6 +35,35 @@ python app.py --txt2img --prompt "..." --upscale --refine-first \
     --factor 2 --denoise 0.30 -m 4x-ClearRealityV1_Soft.safetensors
 ```
 
+## X/Y/Z comparison grid  — `--xyz "AXIS=v1,v2,…"` (repeat ×1–3)
+
+Every combo is generated, saved as a normal output, and the run ends with annotated
+contact sheet(s) in `<output>/xyz_<timestamp>/` (one per Z value; paths printed).
+
+> Ready-to-run example: **`xyz_example.bat "your prompt"`** (Windows) or
+> **`./xyz_example.sh "your prompt"`** (Unix) — a 2×2 Steps × Guidance grid; edit the
+> `--xyz` lines inside to change the axes.
+
+```bash
+# 3×2 grid: Steps × Guidance
+python app.py --txt2img --prompt "a red cat" \
+    --xyz "Steps=4,8,12" --xyz "Guidance=0, 3.5" --save-mode local
+
+# Compare checkpoints (partial names resolve case-insensitively), one sheet per seed
+python app.py --txt2img --prompt "..." \
+    --xyz "Checkpoint=Z-Image-Turbo, intoreal" --xyz "Seed=42, 1234"
+
+# Prompt S/R (first value = search term) + an upscale axis (needs --upscale)
+python app.py --txt2img --prompt "a red cat" --upscale \
+    --xyz "prompt=cat, dog, fox" --xyz "Denoise=0.2, 0.4"
+```
+
+Axes: `Checkpoint`, `Sampler`, `Schedule`, `Steps`, `Guidance`, `Seed`, `ESRGAN model`,
+`Factor`, `Denoise`, `Tile`, `Refine tile`, `LoRA weight`, `Performance`, `Prompt S/R`.
+Axis names and closed-list values resolve case-insensitively (`step` → `Steps`,
+`uni` → `unipc`); quotes protect commas; upscale-only axes require `--upscale`.
+**Ctrl+C assembles a partial sheet** with the cells rendered so far.
+
 ## Choose / switch the Z-Image model
 
 ```bash
@@ -86,6 +115,52 @@ python app.py --cli -i ./my_images --save-mode local --output-dir out --output-f
 python app.py --cli -i in.png --factor 4 --denoise 0.30 --steps 12 \
     --refine-tile 1024 --refine-overlap 128 --save-mode local --output-dir out
 ```
+
+## Batch CivitAI enrichment  — `cz_civitai_batch.py` (standalone, runs in parallel)
+
+Fetch the **missing** CivitAI info (preview + trigger words + example prompts) for every
+model in your LoRA / checkpoint folders, and flag models that have a **newer version** on
+CivitAI. This is a separate script (no torch import → starts instantly); the Asset
+Browser's **🔄 Fetch all missing** button runs the exact same core.
+
+```bash
+# All LoRAs + checkpoints, only the ones missing info
+python cz_civitai_batch.py --kind all
+
+# Backfill: re-query metadata for models already fetched (fills in example prompts,
+# refreshes trigger words / version flags) WITHOUT re-downloading previews
+python cz_civitai_batch.py --kind all --all
+
+# Only LoRAs, re-download everything (overwrite existing previews/sidecars)
+python cz_civitai_batch.py --kind loras --force
+
+# Wrappers (find the venv Python, force UTF-8): pass-through args
+civitai_index.bat --kind models          # Windows
+./civitai_index.sh --kind models         # Unix
+
+# Run in PARALLEL: split into N disjoint shards (one process each)
+python cz_civitai_batch.py --kind all --shard 1/4   # + 2/4, 3/4, 4/4 in other terminals
+civitai_index_parallel.bat 4             # Windows: launches 4 shards at once
+./civitai_index_parallel.sh 4            # Unix
+```
+
+Flags: `--kind {loras,models,all}` · `--force` (overwrite) · `--all` (re-query every file,
+don't overwrite previews) · `--shard i/m` · `--loras-dir` / `--checkpoints-dir` ·
+`--api-key` · `--sleep 0.5` (seconds between requests) · `--no-check-updates`.
+
+**What a re-run actually costs** (it does *not* redo everything):
+
+| | Re-done on a re-run? |
+|---|---|
+| **SHA256 of the models** | **No** — cached in `<name>.civitai.json` after the first pass (and in `<name>.metadata.json` if some other tool wrote one). Only the *first* run reads the files. |
+| **Previews** (`<name>.preview.png`) | **No** — kept unless `--force`. |
+| **Metadata** (prompts, triggers, version flag) | Only with `--all` or `--force`, or for models still missing info: 2 API calls each. |
+| **Asset Browser thumbnails** | Regenerated only if missing or older than the source; reopening the browser rebuilds the catalog in the background. |
+
+So the expensive pass is the **first** one (it hashes the library). After that, a full
+`--all` re-run is essentially just the API calls + `--sleep` per model.
+**CivitAI rate-limits** — keep the shard count modest and set a CivitAI API key (in the
+app's Advanced tab, or `--api-key`) for large runs.
 
 ## Remove background  — `--remove-bg` (local, rembg)
 

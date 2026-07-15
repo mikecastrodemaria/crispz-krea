@@ -90,9 +90,53 @@ def _exif_bytes(meta):
         return None
 
 
+# Scheme de metadonnees (reglable dans l'UI Advanced / config 'metadata_scheme'):
+#   "crispz" (defaut) = chunk PNG 'crispz' (json) + sidecar .json.
+#   "a1111"           = idem + chunk PNG 'parameters' (texte A1111) -> lu par Civitai.
+METADATA_SCHEME = (CONFIG.get("metadata_scheme") or "crispz").lower()
+
+
+def set_metadata_scheme(v):
+    global METADATA_SCHEME
+    if v:
+        METADATA_SCHEME = str(v).strip().lower().split()[0]  # "a1111 (plain text)" -> "a1111"
+    return f"Metadata scheme: {METADATA_SCHEME}"
+
+
+def _a1111_parameters(meta):
+    """Formate un dict de metadonnees facon Automatic1111 / Civitai (chunk 'parameters'):
+        <prompt>\\nNegative prompt: <neg>\\nSteps: N, Sampler: X, CFG scale: Y, Seed: Z, Size: WxH, Model: M"""
+    if not meta:
+        return ""
+    out = [str(meta.get("prompt") or "").strip()]
+    if meta.get("negative"):
+        out.append(f"Negative prompt: {meta['negative']}")
+    parts = []
+    if meta.get("steps") is not None:
+        parts.append(f"Steps: {meta['steps']}")
+    if meta.get("sampler"):
+        parts.append(f"Sampler: {meta['sampler']}")
+    if meta.get("guidance") is not None:
+        parts.append(f"CFG scale: {meta['guidance']}")
+    if meta.get("seed") is not None:
+        parts.append(f"Seed: {meta['seed']}")
+    size = meta.get("size")
+    if size:
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            parts.append(f"Size: {int(size[0])}x{int(size[1])}")
+        else:
+            parts.append(f"Size: {size}")
+    if meta.get("model"):
+        parts.append(f"Model: {os.path.basename(str(meta['model']))}")
+    if parts:
+        out.append(", ".join(parts))
+    return "\n".join(out)
+
+
 def save_image(img, dst_path, output_format, meta=None):
     """Sauve avec le bon format Pillow. Si meta (dict): embarque dans le PNG (chunk
-    'crispz'), en EXIF (ImageDescription) pour jpg/webp, ET ecrit un sidecar .json."""
+    'crispz', + chunk 'parameters' A1111 si metadata_scheme=a1111), en EXIF
+    (ImageDescription) pour jpg/webp, ET ecrit un sidecar .json."""
     fmt = output_format.lower().lstrip(".")
     if fmt in ("jpg", "jpeg"):
         kw = {"quality": 95}
@@ -113,6 +157,8 @@ def save_image(img, dst_path, output_format, meta=None):
                 from PIL import PngImagePlugin
                 pnginfo = PngImagePlugin.PngInfo()
                 pnginfo.add_text("crispz", json.dumps(meta, ensure_ascii=False))
+                if METADATA_SCHEME == "a1111":
+                    pnginfo.add_text("parameters", _a1111_parameters(meta))
             except Exception:
                 pnginfo = None
         img.save(dst_path, "PNG", pnginfo=pnginfo)
