@@ -61,6 +61,68 @@ def test_has_preview_and_sidecar_load():
     assert sc["trainedWords"] == ["foo"] and sc["examples"][0]["prompt"] == "p"
 
 
+def test_sha256_is_cached_and_reused():
+    """Regression: le hash etait recalcule a CHAQUE passe (des centaines de Go relus).
+    Il doit etre persiste dans le sidecar et reutilise."""
+    p = _tmpfile(b"y" * 4096)
+    calls = []
+    real = cz_civitai._compute_sha256
+
+    def counting(path, progress=None):
+        calls.append(path)
+        return real(path, progress=progress)
+
+    cz_civitai._compute_sha256 = counting
+    try:
+        h1 = cz_civitai.model_sha256(p)          # calcule + met en cache
+        h2 = cz_civitai.model_sha256(p)          # doit lire le cache
+    finally:
+        cz_civitai._compute_sha256 = real
+    assert h1 == h2 == hashlib.sha256(b"y" * 4096).hexdigest()
+    assert len(calls) == 1, "le 2e appel doit venir du cache, pas d'un re-hash"
+    sc = cz_civitai.load_civitai_sidecar(p)
+    assert sc["sha256"] == h1 and sc["sha256_size"] == 4096
+
+
+def test_sha256_cache_invalidated_when_size_changes():
+    p = _tmpfile(b"z" * 100)
+    cz_civitai.model_sha256(p)
+    with open(p, "wb") as f:                     # modele remplace -> taille differente
+        f.write(b"z" * 200)
+    assert cz_civitai._cached_sha256(p) is None, "cache perime doit etre rejete"
+    assert cz_civitai.model_sha256(p) == hashlib.sha256(b"z" * 200).hexdigest()
+
+
+def test_metadata_sidecar_wins_over_our_cache():
+    p = _tmpfile(b"w" * 64)
+    cz_civitai.model_sha256(p)                   # remplit notre cache
+    ext = "b" * 64
+    with open(os.path.splitext(p)[0] + ".metadata.json", "w", encoding="utf-8") as f:
+        json.dump({"sha256": ext}, f)
+    assert cz_civitai.model_sha256(p) == ext     # convention externe prioritaire
+
+
+def test_fetch_sidecar_merge_keeps_hash_cache(monkeypatch=None):
+    """Le fetch reecrit le sidecar: il ne doit PAS effacer le cache de hash."""
+    p = _tmpfile(b"m" * 32)
+    sha = cz_civitai.model_sha256(p)
+    payload = {"id": 5, "modelId": 9, "name": "v", "baseModel": "Z", "trainedWords": [],
+               "model": {"name": "M"}, "images": [{"url": "u", "meta": {"prompt": "hi"}}]}
+    old_get, old_upd = cz_civitai._api_get, cz_civitai._update_fields
+    cz_civitai._api_get = lambda ep, params=None, api_key=None, timeout=20: payload
+    cz_civitai._update_fields = lambda *a, **k: {"update_available": False,
+                                                 "latest_versionId": None,
+                                                 "latest_versionName": ""}
+    try:
+        res = cz_civitai.fetch_civitai_for_model(p, check_update=False)
+    finally:
+        cz_civitai._api_get, cz_civitai._update_fields = old_get, old_upd
+    assert res["success"] is True
+    sc = cz_civitai.load_civitai_sidecar(p)
+    assert sc["sha256"] == sha, "le fetch a ecrase le cache de hash"
+    assert sc["modelId"] == 9 and sc["examples"][0]["prompt"] == "hi"
+
+
 def test_examples_from_reads_meta_prompt():
     """Les images by-hash portent un meta REMPLI -> le prompt doit etre extrait.
     Regression: on lisait l'endpoint /images dont 'meta' est toujours null -> 0 prompt."""
@@ -132,7 +194,10 @@ if __name__ == "__main__":
     for fn in (test_compute_sha256_progress, test_model_sha256_reads_sidecar_no_hash,
                test_fetch_missing_file_no_network, test_has_preview_and_sidecar_load,
                test_examples_from_reads_meta_prompt, test_examples_from_respects_limit,
-               test_get_version_by_hash_carries_images, test_api_get_falls_back_to_global_key):
+               test_get_version_by_hash_carries_images, test_api_get_falls_back_to_global_key,
+               test_sha256_is_cached_and_reused, test_sha256_cache_invalidated_when_size_changes,
+               test_metadata_sidecar_wins_over_our_cache,
+               test_fetch_sidecar_merge_keeps_hash_cache):
         fn()
         print(f"OK {fn.__name__}")
     print("All civitai tests passed.")

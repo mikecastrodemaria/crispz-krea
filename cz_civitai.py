@@ -101,13 +101,58 @@ def _compute_sha256(safepath, progress=None):
     return h.hexdigest()
 
 
+def _safe_size(p):
+    try:
+        return os.path.getsize(p)
+    except Exception:
+        return -1
+
+
+def _cached_sha256(safepath):
+    """SHA256 mis en cache par nos soins dans '<stem>.civitai.json'. Invalide si la taille
+    du fichier a change (modele re-telecharge / autre version) -> recalcul."""
+    sc = load_civitai_sidecar(safepath)
+    sha = str(sc.get("sha256") or "").strip().lower()
+    if len(sha) != 64:
+        return None
+    try:
+        if int(sc.get("sha256_size") or -1) != os.path.getsize(safepath):
+            _dbg(f"sha256 cache stale (size changed): {os.path.basename(safepath)}")
+            return None
+    except Exception:
+        return None
+    return sha
+
+
+def _cache_sha256(safepath, sha):
+    """Persiste le SHA256 dans '<stem>.civitai.json' (fusion, on ne perd rien d'existant).
+    Sans ca, chaque passe re-lisait TOUT le fichier (des centaines de Go sur une grosse
+    bibliotheque) juste pour retrouver le meme hash. Ecriture atomique (tmp + replace)."""
+    p = os.path.splitext(safepath)[0] + ".civitai.json"
+    try:
+        sc = load_civitai_sidecar(safepath)
+        sc["sha256"] = sha
+        sc["sha256_size"] = os.path.getsize(safepath)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(sc, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    except Exception as e:
+        _dbg(f"sha256 cache write failed {safepath}: {e}")
+
+
 def model_sha256(safepath, allow_compute=True, progress=None):
-    sha = _sidecar_sha256(safepath)
+    """SHA256 du modele. Ordre: sidecar '<stem>.metadata.json' (convention externe) ->
+    notre cache '<stem>.civitai.json' -> calcul (puis mise en cache)."""
+    sha = _sidecar_sha256(safepath) or _cached_sha256(safepath)
     if sha:
         return sha
     if allow_compute:
         try:
-            return _compute_sha256(safepath, progress=progress)
+            sha = _compute_sha256(safepath, progress=progress)
+            if sha:
+                _cache_sha256(safepath, sha)   # meme si le modele est inconnu de CivitAI
+            return sha
         except Exception as e:
             _dbg(f"sha256 compute failed {safepath}: {e}")
     return None
@@ -261,20 +306,27 @@ def fetch_civitai_for_model(safepath, api_key=None, overwrite=False, progress=No
             except Exception as e:
                 _dbg(f"civitai preview save failed: {e}")
     examples = _examples_from(imgs)
-    sidecar = {
+    # Fusion (et non remplacement): le sidecar porte aussi notre cache de hash
+    # (sha256/sha256_size) -- l'ecraser reprovoquerait un re-hash complet au run suivant.
+    sidecar = load_civitai_sidecar(safepath)
+    sidecar.update({
         "modelName": ver.get("modelName"), "modelId": ver.get("modelId"),
         "versionId": ver.get("versionId"), "baseModel": ver.get("baseModel"),
         "trainedWords": ver.get("trainedWords") or [], "examples": examples,
         "url": f"https://civitai.com/models/{ver.get('modelId')}" if ver.get("modelId") else "",
-    }
+    })
+    sidecar.setdefault("sha256", sha)
+    sidecar.setdefault("sha256_size", _safe_size(safepath))
     upd = {"update_available": False, "latest_versionId": None, "latest_versionName": ""}
     if check_update:
         _p("update", None, "Checking for a newer version…")
         upd = _update_fields(ver.get("modelId"), ver.get("versionId"), api_key)
     sidecar.update(upd)
     try:
-        with open(stem + ".civitai.json", "w", encoding="utf-8") as f:
+        tmp = stem + ".civitai.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(sidecar, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, stem + ".civitai.json")
     except Exception as e:
         _dbg(f"civitai.json write failed: {e}")
     n_prompt = sum(1 for e in examples if e.get("has_prompt"))
@@ -300,8 +352,10 @@ def refresh_update_flag(safepath, api_key=None):
     upd = _update_fields(sc.get("modelId"), sc.get("versionId"), api_key)
     sc.update(upd)
     try:
-        with open(os.path.splitext(safepath)[0] + ".civitai.json", "w", encoding="utf-8") as f:
+        p = os.path.splitext(safepath)[0] + ".civitai.json"
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
             json.dump(sc, f, ensure_ascii=False, indent=2)
+        os.replace(p + ".tmp", p)
     except Exception as e:
         _dbg(f"civitai.json update-flag write failed: {e}")
         return {"success": False, "update_available": bool(upd.get("update_available"))}

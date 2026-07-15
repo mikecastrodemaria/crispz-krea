@@ -147,6 +147,18 @@ civitai_index_parallel.bat 4             # Windows: launches 4 shards at once
 Flags: `--kind {loras,models,all}` · `--force` (overwrite) · `--all` (re-query every file,
 don't overwrite previews) · `--shard i/m` · `--loras-dir` / `--checkpoints-dir` ·
 `--api-key` · `--sleep 0.5` (seconds between requests) · `--no-check-updates`.
+
+**What a re-run actually costs** (it does *not* redo everything):
+
+| | Re-done on a re-run? |
+|---|---|
+| **SHA256 of the models** | **No** — cached in `<name>.civitai.json` after the first pass (and in `<name>.metadata.json` if some other tool wrote one). Only the *first* run reads the files. |
+| **Previews** (`<name>.preview.png`) | **No** — kept unless `--force`. |
+| **Metadata** (prompts, triggers, version flag) | Only with `--all` or `--force`, or for models still missing info: 2 API calls each. |
+| **Asset Browser thumbnails** | Regenerated only if missing or older than the source; reopening the browser rebuilds the catalog in the background. |
+
+So the expensive pass is the **first** one (it hashes the library). After that, a full
+`--all` re-run is essentially just the API calls + `--sleep` per model.
 **CivitAI rate-limits** — keep the shard count modest and set a CivitAI API key (in the
 app's Advanced tab, or `--api-key`) for large runs.
 

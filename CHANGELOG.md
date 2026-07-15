@@ -3,6 +3,31 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.10.2 — 2026-07-15 — Fix: the model SHA256 is cached (re-runs no longer re-hash the library)
+
+`_compute_sha256` computed the hash but **never stored it**, so every batch pass re-read
+every model in full just to obtain the same hash. Measured on a real library: **310 of
+324 models have no `.metadata.json` sidecar → 416 GB re-read on each run.**
+
+- The hash is now **persisted in `<name>.civitai.json`** (`sha256` + `sha256_size`) and
+  reused. Lookup order: external `<name>.metadata.json` (Civitai-Helper convention) →
+  our cache → compute (then cache).
+- Cached **even when the model is unknown to CivitAI**, so those files stop being
+  re-hashed on every pass too.
+- **Invalidation**: the cache is rejected if the file size changed (model replaced /
+  different version) → recompute.
+- The fetch now **merges** the sidecar instead of overwriting it, so writing the CivitAI
+  data no longer wipes the hash cache it had just saved. Sidecar writes (fetch +
+  update-flag refresh) are now **atomic** (tmp + `os.replace`).
+- `_needs_enrich` now tests `modelId` rather than "sidecar exists", so a sidecar holding
+  only the cached hash is not mistaken for an enriched model.
+- Net effect: the first pass still hashes what it must; **subsequent passes read no model
+  bytes at all**.
+- Files: `cz_civitai.py` (`_cached_sha256`, `_cache_sha256`, `model_sha256`, merged +
+  atomic sidecar writes), `cz_civitai_batch.py` (`_needs_enrich`), `tests/test_civitai.py`
+  (+4 tests: cache reused, stale-on-size-change, external sidecar wins, fetch keeps the
+  cache).
+
 ## 1.10.1 — 2026-07-15 — Fix: example prompts were never fetched + API key ignored on some calls
 
 Every CivitAI example was stored with an empty prompt (measured: **1130 / 1130**), so the

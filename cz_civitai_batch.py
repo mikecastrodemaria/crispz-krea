@@ -92,11 +92,12 @@ def collect_files(kind, loras_dir=None, checkpoints_dir=None, shard=None):
 
 
 def _needs_enrich(path, overwrite):
-    """True s'il faut (re)telecharger: pas de sidecar civitai.json, OU pas de preview, OU
-    overwrite demande."""
+    """True s'il faut (re)telecharger: pas d'enrichissement CivitAI, OU pas de preview, OU
+    overwrite demande. On teste 'modelId' et non la simple presence du sidecar: celui-ci
+    peut ne contenir que notre cache de hash (modele inconnu de CivitAI)."""
     if overwrite:
         return True
-    if not cz_civitai.load_civitai_sidecar(path):
+    if not cz_civitai.load_civitai_sidecar(path).get("modelId"):
         return True
     return not cz_civitai.has_preview(path)
 
