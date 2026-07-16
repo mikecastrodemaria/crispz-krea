@@ -10,13 +10,13 @@ Do **not** open a public issue for a security problem.
 
 ## Supported versions
 
-crispz-studio is developed on `main` with no maintenance branches: only the **latest
+crispz-krea is developed on `main` with no maintenance branches: only the **latest
 commit on `main`** receives fixes. The current version is in `cz_core.py`
 (`APP_VERSION`) and shown in the browser tab title.
 
 ## Scope
 
-crispz-studio is a **local desktop application**. `build_ui().launch()`
+crispz-krea is a **local desktop application**. `build_ui().launch()`
 (`cz_cli.py`) runs with Gradio's defaults: it binds **127.0.0.1** and creates **no
 public share link**.
 
@@ -29,7 +29,7 @@ file disclosure.
 
 Reports that depend on the app being deliberately exposed to a network, or on the
 operator loading model files they do not trust, are considered configuration choices
-rather than vulnerabilities in crispz-studio.
+rather than vulnerabilities in crispz-krea.
 
 ## Known Dependabot alerts (assessed, not applicable)
 
