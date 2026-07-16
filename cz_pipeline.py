@@ -1079,9 +1079,11 @@ def get_pipe(kind="img2img"):
     _apply_sampler(p)   # meme sampler que le base (au cas ou from_pipe recree le scheduler)
     # Diagnostic vitesse: si le pipe derive n'est PAS sur cuda -> img2img/refine tourne
     # sur CPU = ultra lent. On le force sur DEVICE en mode plein VRAM (offload gere seul).
+    # NB: offload EFFECTIF (un base GGUF force 'model' meme si l'UI dit 'none'): en
+    # offload, un transformer "sur CPU" est normal -> un .to(cuda) casserait les hooks.
     try:
         tdev = next(p.transformer.parameters()).device
-        if DEVICE == "cuda" and OFFLOAD_MODE == "none" and tdev.type != "cuda":
+        if DEVICE == "cuda" and _effective_offload() == "none" and tdev.type != "cuda":
             _log(f"{kind} pipeline was on {tdev} -> moving to {DEVICE}")
             p = p.to(DEVICE)
             tdev = next(p.transformer.parameters()).device
