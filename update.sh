@@ -73,7 +73,9 @@ else
   echo "Dependances: mise a jour depuis $REQFILE ..."
   # Pillow est hors du lock (borne pillow<12 de gradio) -> pose a part, sinon un
   # update ferait REGRESSER la version corrigee. Cf. install.sh.
-  if "$RUNPY" -m pip install -r "$REQFILE"; then
+  REQTMP="${TMPDIR:-/tmp}/cz_req_nopillow.txt"
+  grep -v '^pillow==' "$REQFILE" > "$REQTMP"
+  if "$RUNPY" -m pip install -r "$REQTMP"; then
     "$RUNPY" -m pip install --no-deps --upgrade "pillow==12.3.0" >/dev/null 2>&1 || true
   else
     echo "[ERREUR] pip install a echoue. Restauration possible:"
