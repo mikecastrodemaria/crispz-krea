@@ -101,6 +101,11 @@ if "!NEEDDEPS!"=="0" (
 ) else (
     echo Dependances: mise a jour depuis !REQFILE! ...
     !RUNPY! -m pip install -r "!REQFILE!"
+    if not errorlevel 1 (
+        REM Pillow est hors du lock (borne pillow^<12 de gradio) -> pose a part,
+        REM sinon un update ferait REGRESSER la version corrigee. Cf. install.bat.
+        !RUNPY! -m pip install --no-deps --upgrade "pillow==12.3.0" >nul 2>&1
+    )
     if errorlevel 1 (
         echo [ERREUR] pip install a echoue. L'environnement peut etre incoherent.
         echo   Restauration possible: !RUNPY! -m pip install -r "%TEMP%\cz_pip_before.txt"

@@ -48,8 +48,8 @@ quick **manual** check in the running UI. Run `run.bat`, hard-refresh
 - [ ] FP8 checkpoints are **absent** from the dropdown.
 
 ## Launchers / sharing (optional)
-- [ ] `run_quality_rtx5090_lan.bat` → open `http://<LAN-IP>:7860` from another device.
-- [ ] `run_quality_rtx5090_web.bat` (+ `cloudflare.local.bat`) → tunnel URL works.
+- [ ] `boot_check_lan.bat` → open `http://<LAN-IP>:7860` from another device.
+- [ ] `boot_check_web.bat` (+ `cloudflare.local.bat`) → tunnel URL works.
 - [ ] Pinokio: install `mikecastrodemaria/crispz-studio.pinokio` → Install → Start → Open Web UI.
 
 ## Notes

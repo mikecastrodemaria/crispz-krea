@@ -3,6 +3,32 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.14.1 — 2026-07-27 — Fix install (Pillow/gradio), sampler status, drop the RTX-5090 scripts
+
+Fallout from testing `install.bat` / `update.bat` / `run.bat` end to end.
+
+- **`install.bat` was broken** by the 1.13.1 security bump: `gradio 5.50` declares
+  `pillow<12.0`, so pinning `pillow==12.3.0` made a clean install fail with
+  `ResolutionImpossible`. The running venv had not noticed because the upgrade used
+  `--no-deps`. There is **no Pillow below 12 that fixes those CVEs** (11.3.0 is the last
+  11.x and leaves 19 advisories open), so Pillow is now installed **separately, after the
+  lock, with `--no-deps`** by `install.bat`/`.sh` — and re-applied by `update.bat`/`.sh` so
+  an update cannot silently regress it. gradio's bound is conservative; Pillow 12 is
+  verified working here (build_ui, save + metadata round-trip, thumbnails, `RankFilter`,
+  `crop`, WebP). The `<6` gradio pin stays deliberate.
+- **Sampler dropdown warning fixed**: `set_sampler` / `set_schedule` return a status
+  string but were wired to `None` outputs, so Gradio logged *"returned too many output
+  values"* on every change (any sampler, not just the new `lcm`). The status is now
+  **displayed** next to the dropdowns instead of being discarded.
+- **RTX-5090 scripts removed**: `boot_check_rtx5090.bat`, `run_quality_rtx5090.bat`,
+  `_lan`, `_web`. They are superseded by `boot_check.bat` / `_lan` / `_web`, which are
+  card-agnostic. Their one behaviour not yet covered — a fixed `GRADIO_SERVER_PORT=7860` —
+  was carried over. No launcher (including the Pinokio one) referenced them.
+- `config.txt` regains the inline `_help` documentation it had lost historically, plus the
+  24 keys added since it was created — user values preserved.
+- Files: `install.bat`, `install.sh`, `update.bat`, `update.sh`, `requirements-lock.txt`,
+  `cz_ui.py`, `boot_check.bat`, `README.md`, `VALIDATION.md`.
+
 ## 1.14.0 — 2026-07-27 — Smart boot check (any GPU) + update scripts
 
 `boot_check_rtx5090.bat` only knew one card and hardcoded a model path. Replaced by a

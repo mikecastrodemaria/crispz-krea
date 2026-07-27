@@ -2847,6 +2847,10 @@ def build_ui():
                                 label="Schedule", scale=1,
                                 info="sigma schedule (ComfyUI-style). sgm_uniform = native Z-Image. "
                                      "beta/karras/exponential remap the sigmas.")
+                        # set_sampler/set_schedule renvoient un statut: on l'AFFICHE au lieu
+                        # de le jeter (sinon Gradio avertit "returned too many output values").
+                        sampler_status = gr.Markdown(
+                            f"Sampler: {cz_pipeline.SAMPLER} / {cz_pipeline.SCHEDULE}")
                         image_number = gr.Slider(1, 30, value=int(CONFIG.get("default_image_number", 1)),
                                                  step=1, label="Image number (batch)")
                         seed = gr.Number(value=int(CONFIG.get("default_seed", -1)),
@@ -3148,8 +3152,8 @@ def build_ui():
             .then(_ui_apply_ckpt_silent, [ckpt_dd], [ckpt_status]) \
             .then(_ui_apply_transformer_silent, [transformer_tb], [ckpt_status]) \
             .then(_apply_loras, _lora_slots, [lora_status]) \
-            .then(set_sampler, [sampler_dd], None) \
-            .then(set_schedule, [schedule_dd], None)
+            .then(set_sampler, [sampler_dd], [sampler_status]) \
+            .then(set_schedule, [schedule_dd], [sampler_status])
         preset_save_btn.click(_ui_preset_save, [preset_name_tb] + _preset_io, [preset_dd, preset_status])
         preset_update_btn.click(_ui_preset_save, [preset_dd] + _preset_io, [preset_dd, preset_status])
         preset_delete_btn.click(_ui_preset_delete, [preset_dd], [preset_dd, preset_status])
@@ -3209,8 +3213,8 @@ def build_ui():
                       [factor, denoise, refine_steps, tile, overlap, refine_tile, refine_overlap, offload])
         # Sampler (euler/unipc) + schedule (sgm_uniform/beta/karras/exp): applique le
         # scheduler choisi aux pipes en cache (pas de rechargement).
-        sampler_dd.change(set_sampler, [sampler_dd], None)
-        schedule_dd.change(set_schedule, [schedule_dd], None)
+        sampler_dd.change(set_sampler, [sampler_dd], [sampler_status])
+        schedule_dd.change(set_schedule, [schedule_dd], [sampler_status])
         # Seed (facon Fooocus): reutiliser le seed concret du dernier rendu + fixer le seed.
         reuse_seed_btn.click(lambda: gr.update(value=int(cz_pipeline._LAST_SEED)), None, [seed])
         no_seed_inc_cb.change(cz_pipeline.set_no_seed_increment, [no_seed_inc_cb], None)
