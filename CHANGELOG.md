@@ -3,6 +3,38 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.14.0 — 2026-07-27 — Smart boot check (any GPU) + update scripts
+
+`boot_check_rtx5090.bat` only knew one card and hardcoded a model path. Replaced by a
+generic diagnostic, and the missing post-`git pull` step now exists.
+
+- **`boot_check.bat`** — works on any NVIDIA card. Beyond driver/VRAM/temperature, it runs
+  the check that actually matters: **is the GPU's `sm_XX` in the installed torch build's
+  arch list?** That is precisely the *"RTX 50xx + non-cu128 torch"* failure
+  (`WinError 127 … torch_cuda.dll`) hit earlier in this project — it is now caught **before
+  launch**, with the exact `pip install --index-url …` line to fix it, and the script stops
+  instead of letting the app die at the first CUDA allocation.
+- **Recommendations scale with the card**: `_hw_check.py` now maps compute capability to a
+  generation name (Blackwell / Ada / Ampere / Turing / Pascal) and derives CPU offload,
+  ESRGAN tiling, max resolution and dtype from the real VRAM. Thresholds come from figures
+  measured in this project (FLUX bf16 ≈ 33 GB with its encoder, GGUF Q8 ≈ 12,7 GB,
+  `sequential` ≈ 3 s/step vs `model` ≈ 1,1 s/step). The 12 GB tier is keyed at 11 GB, since
+  a "12 GB" card reports ~11,9 — putting it on `sequential` would have cost 3x for nothing.
+- **Model folders are read from `config.txt`** instead of a hardcoded `D:\…\Z-Image`.
+- **`boot_check_lan.bat` / `boot_check_web.bat`** — same diagnostic then LAN (`0.0.0.0`) or
+  Cloudflare tunnel; both print a **no-authentication warning** first, consistent with
+  `SECURITY.md`. `boot_check_rtx5090.bat` is kept as an alias.
+- **`update.bat` / `update.sh`** — the post-GitHub-update step: refuses to `git pull` over
+  uncommitted work (shows what is dirty), reinstalls dependencies **only if the requirements
+  file changed** (md5), **warns if `torch` was replaced** (a transitive resolve can swap a
+  `+cu128` build for a CPU wheel — that happened here once), re-runs the hardware check,
+  verifies diffusers and `cz_ui` still import, and lists **new config keys** from
+  `config-sample.txt` (`config.txt` is never overwritten). Flags: `--no-pull`,
+  `--force-deps`, `--shared`.
+- All `.bat` written with **CRLF**: `goto` silently fails on LF-only batch files.
+- Files: `boot_check.bat`, `boot_check_lan.bat`, `boot_check_web.bat`,
+  `boot_check_rtx5090.bat` (alias), `update.bat`, `update.sh`, `_hw_check.py`, `README.md`.
+
 ## 1.13.1 — 2026-07-27 — Security: upgrade Pillow / protobuf / sentencepiece (21 Dependabot alerts)
 
 Adding `requirements-lock.txt` made Dependabot match **pinned versions** instead of ranges,
