@@ -3,6 +3,36 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.13.0 — 2026-07-27 — Asset Browser: per-day index + incremental indexing (Fooocus architecture)
+
+Follow-up to 1.12.2. The metadata cache fixed the *server* side (295 s -> 3,7 s), but the
+browser still downloaded and rendered a **9,42 MB manifest with all 9 278 images** on every
+open. Aligned on the Fooocus design, which was studied for this.
+
+- **`_index/days.json`** — a tiny index (`{date, count}` per day, ~200 bytes for 42 days).
+  The page reads *that* on open, so the sidebar and the current day appear immediately
+  instead of waiting for a multi-megabyte manifest.
+- **One `manifest.json` per day**, written *inside* the day folder (Fooocus convention).
+  The SPA loads only the day being displayed: **9,42 MB -> 1,48 MB** for the largest day
+  (938 images), and typically far less. **5400x less data** for the initial load.
+- **Incremental indexing** — new `on_image_saved()` hook (crispz's `on_image_logged`),
+  called from `save_image()`: thumbnail + day manifest + `days.json` are updated **as the
+  image is written** (~15 ms), so the browser no longer needs a folder rescan to be current.
+  Idempotent (re-saving the same file does not duplicate it) and silent by contract — any
+  failure is logged and *never* breaks a generation.
+- **Global search preserved.** Fooocus only searches within the LoRA/Models tabs; crispz
+  searches all output metadata, so that was kept: typing a query loads the remaining days
+  in the background (cached in memory) and searches across everything.
+- **Backwards compatible**: the global `_index/manifest.json` is still written, and the SPA
+  falls back to it when `days.json` is absent (index not migrated yet).
+- `_entry_for()` is now the single definition of a manifest entry, shared by the full
+  reindex and the incremental hook, so the two paths cannot drift apart.
+- Files: `cz_assetbrowser.py` (`_write_day_manifests`, `on_image_saved`, `_bump_days_index`,
+  `_entry_for`, `_INCR_LOCK`), `cz_imageio.py` (hook in `save_image`), `cz_assets.py`
+  (SPA: `days.json` -> per-day load, search loads all days), `tests/test_ab_index.py`
+  (+5 tests: per-day manifests, incremental add, idempotence, never raises, identical
+  entry shape between both paths).
+
 ## 1.12.2 — 2026-07-27 — Asset Browser: metadata cache (reindex 80x faster)
 
 Opening the Asset Browser re-read the PNG metadata of **every** image on every open —
