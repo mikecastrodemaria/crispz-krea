@@ -71,7 +71,11 @@ if [ "$NEEDDEPS" = "0" ]; then
   echo "Dependances: $REQFILE inchange -> rien a reinstaller. (--force-deps pour forcer)"
 else
   echo "Dependances: mise a jour depuis $REQFILE ..."
-  if ! "$RUNPY" -m pip install -r "$REQFILE"; then
+  # Pillow est hors du lock (borne pillow<12 de gradio) -> pose a part, sinon un
+  # update ferait REGRESSER la version corrigee. Cf. install.sh.
+  if "$RUNPY" -m pip install -r "$REQFILE"; then
+    "$RUNPY" -m pip install --no-deps --upgrade "pillow==12.3.0" >/dev/null 2>&1 || true
+  else
     echo "[ERREUR] pip install a echoue. Restauration possible:"
     echo "  $RUNPY -m pip install -r $SNAP"
     exit 1

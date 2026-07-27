@@ -130,6 +130,18 @@ fi
 $RUNPY -m pip install -r "$REQFILE"
 echo
 
+# 5bis) Pillow, installe A PART et en --no-deps.
+#   gradio 5.50 declare "pillow<12.0", mais les CVE Pillow (dont celles
+#   atteignables via les images que l'utilisateur ouvre) ne sont corrigees qu'en
+#   12.x. Cette borne de gradio est conservatrice: verifie sur cette base de
+#   code, Pillow 12 fonctionne. On installe donc apres coup, sans redeclencher
+#   la resolution qui refuserait la combinaison.
+PILLOW_PIN="pillow==12.3.0"
+echo "Installation de $PILLOW_PIN (a part: contourne la borne pillow<12 de gradio)..."
+$RUNPY -m pip install --no-deps --upgrade "$PILLOW_PIN" \
+    || echo "[AVERT] echec install Pillow -> version heritee conservee."
+echo
+
 # 6) Verifier que diffusers expose le pipeline de cette famille de modele
 $RUNPY -c "from diffusers import $CHECK_PIPE; print('$CHECK_PIPE OK')"
 echo

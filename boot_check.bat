@@ -1,5 +1,5 @@
 @echo off
-REM Boot check generique crispz-studio (remplace boot_check_rtx5090.bat).
+REM Boot check generique crispz-studio (remplace les anciens scripts rtx5090).
 REM
 REM Diagnostique la machine AVANT de lancer l'app, quelle que soit la carte
 REM (RTX 50xx / 40xx / 30xx / 20xx...), et s'arrete net si la configuration ne
@@ -109,6 +109,9 @@ set NVIDIA_TF32_OVERRIDE=1
 set CUDA_CACHE_MAXSIZE=4294967296
 set CUDA_AUTO_BOOST=1
 set CUDA_DEVICE_ORDER=PCI_BUS_ID
+REM Port fixe (heritage des anciens run_quality_*.bat): evite que Gradio parte
+REM sur 7861+ quand une instance precedente n'a pas encore libere le port.
+if not defined GRADIO_SERVER_PORT set GRADIO_SERVER_PORT=7860
 
 REM --- Exposition reseau (--lan / --web): Gradio lit ces variables nativement ---
 set "CF_PORT=7860"

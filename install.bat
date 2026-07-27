@@ -139,6 +139,18 @@ if errorlevel 1 (
 )
 echo.
 
+REM 5bis) Pillow, installe A PART et en --no-deps.
+REM   gradio 5.50 declare "pillow<12.0", mais les CVE Pillow (dont celles
+REM   atteignables via les images que l'utilisateur ouvre) ne sont corrigees
+REM   qu'en 12.x. Cette borne de gradio est conservatrice: verifie sur cette
+REM   base de code, Pillow 12 fonctionne. On installe donc apres coup, sans
+REM   redeclencher la resolution qui refuserait la combinaison.
+set "PILLOW_PIN=pillow==12.3.0"
+echo Installation de !PILLOW_PIN! ^(a part: contourne la borne pillow^<12 de gradio^)...
+!RUNPY! -m pip install --no-deps --upgrade "!PILLOW_PIN!"
+if errorlevel 1 echo [AVERT] echec install Pillow -^> version heritee conservee.
+echo.
+
 REM 6) Verifier que diffusers expose le pipeline de cette famille de modele
 !RUNPY! -c "from diffusers import !CHECK_PIPE!; print('!CHECK_PIPE! OK')"
 if errorlevel 1 (
