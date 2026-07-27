@@ -100,7 +100,9 @@ if "!NEEDDEPS!"=="0" (
     echo   ^(--force-deps pour forcer^)
 ) else (
     echo Dependances: mise a jour depuis !REQFILE! ...
-    !RUNPY! -m pip install -r "!REQFILE!"
+    set "REQTMP=%TEMP%\cz_req_nopillow.txt"
+    findstr /V /B /C:"pillow==" "!REQFILE!" > "!REQTMP!"
+    !RUNPY! -m pip install -r "!REQTMP!"
     if not errorlevel 1 (
         REM Pillow est hors du lock (borne pillow^<12 de gradio) -> pose a part,
         REM sinon un update ferait REGRESSER la version corrigee. Cf. install.bat.

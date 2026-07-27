@@ -132,7 +132,12 @@ set REQFILE=requirements.txt
 if "!ISOLATED!"=="1" if exist "requirements-lock.txt" set REQFILE=requirements-lock.txt
 echo Installation des dependances depuis !REQFILE! ...
 if "!REQFILE!"=="requirements-lock.txt" echo   ^(inclut torch cu128, ~3,5 Go de telechargement la premiere fois^)
-!RUNPY! -m pip install -r !REQFILE!
+REM Pillow est filtre du fichier: gradio 5.50 declare pillow^<12 et refuserait
+REM de resoudre avec le pin 12.x. Il est pose juste apres, en --no-deps.
+REM Le pin reste dans le lock pour que Dependabot voie la version corrigee.
+set "REQTMP=%TEMP%\cz_req_nopillow.txt"
+findstr /V /B /C:"pillow==" "!REQFILE!" > "!REQTMP!"
+!RUNPY! -m pip install -r "!REQTMP!"
 if errorlevel 1 (
     echo [ERREUR] echec pip install. Verifie le log ci-dessus.
     exit /b 1
