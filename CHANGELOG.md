@@ -3,6 +3,25 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.12.2 — 2026-07-27 — Asset Browser: metadata cache (reindex 80x faster)
+
+Opening the Asset Browser re-read the PNG metadata of **every** image on every open —
+~25 ms each. Measured on a real 9 278-image library: **295 s per open**, while the SPA
+gives up polling after 180 s (90 x 2 s). The manifest was therefore written *after* the
+page stopped listening: "it doesn't refresh" and "images are missing".
+
+- `ab_reindex` now keeps a **metadata cache** (`_index/meta_cache.json`, rel -> mtime+size
+  signature + parsed meta). Unchanged files are served from it; only new or modified
+  images are re-read.
+- Measured on the same 9 278 images: **295 s -> 3,7 s (80x)**. Well under the polling
+  window, so the gallery fills in as intended.
+- Cache follows deletions (entries for vanished files are dropped, no unbounded growth)
+  and is **defensive**: a corrupt/unreadable cache is ignored and rebuilt, never fatal.
+- Each pass logs what it did: `indexed N image(s) in X.Xs (H from meta cache, R read)`.
+- Files: `cz_assetbrowser.py` (`_load_meta_cache`, `_save_meta_cache`, `_meta_cached`),
+  `tests/test_ab_index.py` (5 tests: cache hit, modified file re-read, fresh metadata
+  reaches the manifest, deletions pruned, corrupt cache non-fatal).
+
 ## 1.12.1 — 2026-07-27 — New `lcm` sampler (LCM flow-matching)
 
 - **Sampler** gains **`lcm`** (`FlowMatchLCMScheduler`) next to `euler` and `unipc`:

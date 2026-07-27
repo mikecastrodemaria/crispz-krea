@@ -186,6 +186,51 @@ def _ab_gen_thumbs(jobs, size, quality, force=False, progress=None, workers=None
     return res
 
 
+_META_CACHE_FILE = "meta_cache.json"
+
+
+def _load_meta_cache(idx_dir):
+    """Cache des metadonnees d'images: rel -> {mtime, size, meta}. Relire les tags PNG
+    coute ~25 ms/image (mesure: 229 s pour 9278 images) et c'est refait a CHAQUE
+    ouverture alors que 99% des fichiers n'ont pas bouge. Defensif: un cache illisible
+    est ignore (on repart de zero), jamais d'erreur bloquante."""
+    p = os.path.join(idx_dir, _META_CACHE_FILE)
+    try:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("files"), dict):
+                return data["files"]
+    except Exception as e:
+        _dbg(f"meta cache unreadable, rebuilding: {e}")
+    return {}
+
+
+def _save_meta_cache(idx_dir, files):
+    try:
+        _write_atomic_text(os.path.join(idx_dir, _META_CACHE_FILE),
+                           json.dumps({"files": files}, ensure_ascii=False))
+    except Exception as e:
+        _dbg(f"meta cache write failed: {e}")
+
+
+def _meta_cached(cache, rel, path):
+    """Metadonnees de `path`, depuis le cache si le fichier n'a pas change (mtime+taille),
+    sinon relues et mises en cache. Renvoie (meta, from_cache)."""
+    try:
+        st = os.stat(path)
+        sig = [int(st.st_mtime), int(st.st_size)]
+    except Exception:
+        sig = None
+    hit = cache.get(rel)
+    if sig and isinstance(hit, dict) and hit.get("sig") == sig and isinstance(hit.get("meta"), dict):
+        return hit["meta"], True
+    meta = _read_image_meta(path) or {}
+    if sig:
+        cache[rel] = {"sig": sig, "meta": meta}
+    return meta, False
+
+
 def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=True,
                background_thumbs=False):
     """Ecrit index.html + _index/manifest.json (+ thumbnails). Recursif (sous-dossiers
@@ -196,7 +241,10 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
     idx_dir = os.path.join(d, "_index")
     os.makedirs(os.path.join(idx_dir, "thumbs"), exist_ok=True)
     _write_atomic_text(os.path.join(d, "index.html"), _render_spa())
+    meta_cache = _load_meta_cache(idx_dir)
+    fresh_cache, hits, reads = {}, 0, 0
     entries, jobs = [], []
+    t_idx = time.time()
     for rel, p in _ab_scan(d):
         thumb_rel = rel  # fallback = image complete
         trel = "_index/thumbs/" + os.path.splitext(rel)[0] + ".jpg"
@@ -215,7 +263,13 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
                     thumb_rel = trel
                 except Exception as e:
                     _dbg(f"ab thumb failed {rel}: {e}")
-        meta = _read_image_meta(p)
+        meta, cached = _meta_cached(meta_cache, rel, p)
+        # On ne garde que les fichiers encore presents -> le cache ne gonfle pas
+        # indefiniment quand des images sont supprimees.
+        if rel in meta_cache:
+            fresh_cache[rel] = meta_cache[rel]
+        hits += 1 if cached else 0
+        reads += 0 if cached else 1
         sub = os.path.dirname(rel)
         try:
             date = sub if (len(sub) == 10 and sub[4] == "-") else \
@@ -235,6 +289,9 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
                 "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "images": entries}
     _write_atomic_text(os.path.join(idx_dir, "manifest.json"),
                        json.dumps(manifest, ensure_ascii=False))
+    _save_meta_cache(idx_dir, fresh_cache)
+    _log(f"asset-browser: indexed {len(entries)} image(s) in {time.time() - t_idx:.1f}s "
+         f"({hits} from meta cache, {reads} read)")
     if jobs and background_thumbs:
         threading.Thread(target=_ab_gen_thumbs, args=(jobs, int(thumb_size), int(quality)),
                          daemon=True).start()
