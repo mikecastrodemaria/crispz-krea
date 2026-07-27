@@ -117,9 +117,11 @@ FORCE_RATIO = (os.environ.get("CZ_FORCE_RATIO") or CONFIG.get("force_upscale_rat
 
 # Sampler / scheduler. Le pipeline Z-Image impose un schedule `sigmas` custom: seuls
 # les schedulers dont set_timesteps accepte `sigmas` fonctionnent. En pratique -> Euler
-# flow-matching (natif, defaut) et UniPC (multistep). Les DPM++ 2M / DPM2a de diffusers
-# ne prennent PAS de sigmas custom -> incompatibles (retires).
-SAMPLER_CHOICES = ("euler", "unipc")
+# flow-matching (natif, defaut), UniPC (multistep) et LCM flow-matching (interessant sur
+# les modeles distilles/Turbo: peu de steps, guidance ~0-1).
+# Les DPM++ 2M / DPM2a / DPM++ SDE (dpmpp_sde) de diffusers ne prennent PAS de sigmas
+# custom -> incompatibles (DPMSolverSDEScheduler exige en plus torchsde). Non exposes.
+SAMPLER_CHOICES = ("euler", "unipc", "lcm")
 SAMPLER = (os.environ.get("ZIMAGE_SAMPLER") or CONFIG.get("default_sampler") or "euler").strip().lower()
 if SAMPLER not in SAMPLER_CHOICES:
     SAMPLER = "euler"
@@ -187,12 +189,21 @@ def _build_scheduler(sampler, schedule, config):
     flag = _SCHEDULE_FLAG.get((schedule or "").lower())
     if flag:
         kw[flag] = True
-    if (sampler or "euler").lower() == "unipc":
+    name = (sampler or "euler").lower()
+    if name == "unipc":
         from diffusers import UniPCMultistepScheduler
         try:
             return UniPCMultistepScheduler.from_config(config, use_flow_sigmas=True, **kw)
         except Exception:
             return UniPCMultistepScheduler.from_config(config, **kw)
+    if name == "lcm":
+        # LCM flow-matching: accepte les sigmas custom du pipeline ET les flags de
+        # schedule. Repli sur Euler si la version de diffusers ne l'expose pas.
+        try:
+            from diffusers import FlowMatchLCMScheduler
+            return FlowMatchLCMScheduler.from_config(config, **kw)
+        except Exception as e:
+            _log(f"sampler 'lcm' unavailable ({e}); falling back to euler")
     return FlowMatchEulerDiscreteScheduler.from_config(config, **kw)
 
 

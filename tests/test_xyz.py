@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image  # noqa: E402
 
 import cz_ui  # noqa: E402
+import cz_pipeline  # noqa: E402
 
 
 def _base_vals(prompt="a red cat on a sofa"):
@@ -108,7 +109,9 @@ def test_suggestions():
     fill, ph = cz_ui._xyz_suggestions("Steps")            # calibrage numerique
     assert fill == "4, 8, 12, 20, 28" and "4, 8" in ph
     fill, ph = cz_ui._xyz_suggestions("Sampler")          # liste fermee
-    assert cz_ui._xyz_parse_values(fill) == ["euler", "unipc"]
+    # Derive de la source de verite (cz_pipeline.SAMPLER_CHOICES): ajouter un sampler
+    # ne doit pas casser le test, mais la suggestion doit rester exhaustive.
+    assert cz_ui._xyz_parse_values(fill) == list(cz_pipeline.SAMPLER_CHOICES)
     fill, ph = cz_ui._xyz_suggestions("Performance")
     assert "Turbo (8 steps)" in cz_ui._xyz_parse_values(fill)
     fill, ph = cz_ui._xyz_suggestions("Checkpoint")       # repos officiels presents
