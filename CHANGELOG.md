@@ -3,6 +3,33 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.15.0 — 2026-07-28 — Release: Asset Browser rearchitecture, security, GPU-agnostic tooling
+
+Consolidates everything since **v1.11.2**. Nothing new here beyond the last build change
+below — this entry marks the release boundary.
+
+**Asset Browser — the big one.** Opening it re-read the PNG metadata of every image on
+every open (**295 s** for 9 278 images) and shipped a **9,42 MB** manifest to the browser,
+while the SPA stopped polling after 180 s — so it never finished filling in. Rebuilt on the
+Fooocus design: a metadata cache (295 s → **3,7 s**), a tiny `days.json` plus one manifest
+per day (**5 400× less data** on open), and incremental indexing at save time (~15 ms/image,
+no rescan). Global search was kept, which Fooocus does not have on its Outputs tab.
+
+**Security.** 37 Dependabot alerts triaged against what the code actually calls: Pillow,
+protobuf and sentencepiece upgraded (**21 closed, 0 advisories left** on those pins), the
+other 16 assessed unreachable and dismissed with per-package reasons — documented in
+`SECURITY.md`, and the four Dependabot PRs closed with the reasoning.
+
+**Tooling.** `boot_check.bat` replaces the RTX-5090-only script and works on any card; its
+decisive check compares the GPU's `sm_XX` against the installed torch build, catching the
+`WinError 127 torch_cuda.dll` class of failure *before* launch. `update.bat`/`.sh` add the
+missing post-`git pull` step. New `lcm` sampler; LoRA weights can go negative (`-2..2`).
+
+- Last change in this release: the `pillow==12.3.0` pin stays in `requirements-lock.txt`
+  (so Dependabot sees the fixed version) and `install.*` / `update.*` filter that one line
+  out before `pip` runs, installing Pillow separately with `--no-deps`. Commenting it out
+  had fixed the install but left Dependabot matching the whole advisory range.
+
 ## 1.14.1 — 2026-07-27 — Fix install (Pillow/gradio), sampler status, drop the RTX-5090 scripts
 
 Fallout from testing `install.bat` / `update.bat` / `run.bat` end to end.
