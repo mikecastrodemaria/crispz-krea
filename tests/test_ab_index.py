@@ -118,10 +118,111 @@ def test_corrupt_cache_is_ignored_not_fatal():
     json.load(open(p, encoding="utf-8"))               # reecrit valide
 
 
+# --------------------------------------------------------------------------
+# Index par jour + hook incremental (architecture Fooocus)
+# --------------------------------------------------------------------------
+
+def _enable_ab():
+    import cz_core
+    cz_core.CONFIG.setdefault("asset_browser", {})["enabled"] = True
+
+
+def test_per_day_manifests_and_days_index():
+    d = tempfile.mkdtemp()
+    for day, n in (("2026-07-25", 2), ("2026-07-26", 3)):
+        sub = os.path.join(d, day)
+        os.makedirs(sub)
+        for i in range(n):
+            info = PngInfo()
+            info.add_text("crispz", json.dumps({"prompt": f"{day} {i}"}))
+            Image.new("RGB", (32, 32)).save(os.path.join(sub, f"i{i}.png"), pnginfo=info)
+    AB.ab_reindex(d, gen_thumbs=False)
+    idx = json.load(open(os.path.join(d, "_index", "days.json"), encoding="utf-8"))
+    assert idx["total"] == 5
+    assert [x["date"] for x in idx["days"]] == ["2026-07-26", "2026-07-25"]  # recent en tete
+    assert [x["count"] for x in idx["days"]] == [3, 2]
+    # chaque jour a son propre manifest, dans son dossier
+    m = json.load(open(os.path.join(d, "2026-07-26", "manifest.json"), encoding="utf-8"))
+    assert m["count"] == 3 and all(e["day"] == "2026-07-26" for e in m["images"])
+    # days.json doit rester minuscule devant le manifest global
+    assert os.path.getsize(os.path.join(d, "_index", "days.json")) < \
+        os.path.getsize(os.path.join(d, "_index", "manifest.json"))
+
+
+def test_incremental_hook_adds_without_rescan():
+    _enable_ab()
+    d = tempfile.mkdtemp()
+    sub = os.path.join(d, "2026-07-27")
+    os.makedirs(sub)
+    Image.new("RGB", (32, 32)).save(os.path.join(sub, "a.png"))
+    AB.ab_reindex(d, gen_thumbs=False)
+    p = os.path.join(sub, "b.png")
+    Image.new("RGB", (32, 32)).save(p)
+    assert AB.on_image_saved(p, output_dir=d, meta={"prompt": "phare", "seed": 7}) is True
+    man = json.load(open(os.path.join(sub, "manifest.json"), encoding="utf-8"))
+    assert man["count"] == 2
+    assert man["images"][0]["file"].endswith("b.png")        # plus recent en tete
+    assert man["images"][0]["prompt"] == "phare"
+    idx = json.load(open(os.path.join(d, "_index", "days.json"), encoding="utf-8"))
+    assert idx["total"] == 2
+
+
+def test_incremental_hook_is_idempotent():
+    _enable_ab()
+    d = tempfile.mkdtemp()
+    sub = os.path.join(d, "2026-07-27")
+    os.makedirs(sub)
+    p = os.path.join(sub, "a.png")
+    Image.new("RGB", (32, 32)).save(p)
+    for _ in range(3):
+        AB.on_image_saved(p, output_dir=d, meta={"prompt": "x"})
+    man = json.load(open(os.path.join(sub, "manifest.json"), encoding="utf-8"))
+    assert man["count"] == 1, f"pas de doublon attendu, {man['count']} entrees"
+
+
+def test_incremental_hook_never_raises():
+    _enable_ab()
+    d = tempfile.mkdtemp()
+    # fichier hors du dossier de sortie, fichier inexistant, non-image: tout doit
+    # renvoyer False sans lever (une generation ne doit jamais casser la-dessus).
+    assert AB.on_image_saved(os.path.join(tempfile.mkdtemp(), "ailleurs.png"),
+                             output_dir=d) is False
+    assert AB.on_image_saved(os.path.join(d, "absent.png"), output_dir=d) is False
+    txt = os.path.join(d, "note.txt")
+    open(txt, "w").write("x")
+    assert AB.on_image_saved(txt, output_dir=d) is False
+
+
+def test_reindex_and_hook_produce_the_same_entry_shape():
+    """Les deux chemins passent par _entry_for -> memes cles, pas de divergence."""
+    _enable_ab()
+    d = tempfile.mkdtemp()
+    sub = os.path.join(d, "2026-07-27")
+    os.makedirs(sub)
+    info = PngInfo()
+    info.add_text("crispz", json.dumps({"prompt": "p", "seed": 1, "steps": 8}))
+    Image.new("RGB", (32, 32)).save(os.path.join(sub, "a.png"), pnginfo=info)
+    AB.ab_reindex(d, gen_thumbs=False)
+    from_reindex = json.load(open(os.path.join(sub, "manifest.json"),
+                                  encoding="utf-8"))["images"][0]
+    p = os.path.join(sub, "b.png")
+    Image.new("RGB", (32, 32)).save(p, pnginfo=info)
+    AB.on_image_saved(p, output_dir=d, meta={"prompt": "p", "seed": 1, "steps": 8})
+    from_hook = json.load(open(os.path.join(sub, "manifest.json"),
+                               encoding="utf-8"))["images"][0]
+    assert set(from_reindex) == set(from_hook), \
+        f"cles differentes: {set(from_reindex) ^ set(from_hook)}"
+
+
 if __name__ == "__main__":
     for fn in (test_second_pass_uses_cache, test_modified_image_is_reread,
                test_cache_reflects_new_metadata, test_deleted_images_leave_the_cache,
-               test_corrupt_cache_is_ignored_not_fatal):
+               test_corrupt_cache_is_ignored_not_fatal,
+               test_per_day_manifests_and_days_index,
+               test_incremental_hook_adds_without_rescan,
+               test_incremental_hook_is_idempotent,
+               test_incremental_hook_never_raises,
+               test_reindex_and_hook_produce_the_same_entry_shape):
         fn()
         print(f"OK {fn.__name__}")
     print("All asset-browser index tests passed.")

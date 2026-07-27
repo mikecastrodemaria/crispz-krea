@@ -283,7 +283,10 @@ if(ev.key==='ArrowLeft')exNav(-1);if(ev.key==='ArrowRight')exNav(1);return;}
 if(!lb.classList.contains('open'))return;
 if(ev.key==='Escape')close();if(ev.key==='ArrowLeft')document.getElementById('prev').click();
 if(ev.key==='ArrowRight')document.getElementById('next').click();});
-q.oninput=filter;
+q.oninput=function(){var had=_searching;_searching=!!q.value.trim();
+if(curSource==='outputs'&&_searching&&!_allLoaded){_ensureAll().then(filter);return;}
+if(curSource==='outputs'&&had&&!_searching){showDay(curFolder);return;}
+filter();};
 document.getElementById('blurbtn').onclick=()=>document.body.classList.toggle('blur');
 document.getElementById('fetchall').onclick=fetchAll;
 document.getElementById('rebuildthumbs').onclick=rebuildThumbs;
@@ -301,39 +304,84 @@ h+='<div class="f'+(curFolder===d?' active':'')+(isH?' hidden-f':'')+'" data-f="
 '<span>'+esc(d)+'</span><span><span class="cnt">'+c[d]+'</span>'+
 '<button class="hb" data-h="'+esc(d)+'">'+(isH?'show':'hide')+'</button></span></div>';});
 folders.innerHTML=h;}
+function _isOut(){return curSource==='outputs';}
 folders.onclick=function(ev){const hb=ev.target.closest('.hb');
 if(hb){const d=hb.getAttribute('data-h');if(hidden.has(d))hidden.delete(d);else hidden.add(d);saveHidden();
-if(curFolder===d&&hidden.has(d)&&!showHidden)curFolder='';renderFolders();filter();return;}
+if(curFolder===d&&hidden.has(d)&&!showHidden)curFolder='';
+if(_isOut()){showDay(curFolder);return;}renderFolders();filter();return;}
 const f=ev.target.closest('.f');if(!f)return;curFolder=f.getAttribute('data-f')||'';_folderUserSet=true;
+if(_isOut()){showDay(curFolder);return;}
 renderFolders();filter();};
 document.getElementById('hiddenbtn').onclick=function(){showHidden=!showHidden;
-this.classList.toggle('on',showHidden);renderFolders();filter();};
+this.classList.toggle('on',showHidden);
+if(_isOut()){renderDays();filter();return;}renderFolders();filter();};
 var _gen='',_focus='';var _srcUrls={outputs:'_index/manifest.json',loras:'_index/loras.json',models:'_index/models.json'};
+// --- Outputs: index par JOUR (facon Fooocus) ---------------------------------
+// _index/days.json = liste {date,count} (quelques Ko) -> la page s'ouvre tout de suite.
+// Le manifest d'un jour n'est charge qu'a l'affichage de ce jour. La recherche, elle,
+// a besoin de TOUT: on charge alors les jours en tache de fond (caches en memoire).
+var DAYS=[],_dayCache={},_allLoaded=false,_searching=false;
+function _dayUrl(day){return (day==='(root)'?'':encodeURIComponent(day)+'/')+'manifest.json';}
+function _fetchDay(day){if(_dayCache[day])return Promise.resolve(_dayCache[day]);
+return fetch(_dayUrl(day)+'?t='+Date.now()).then(function(r){return r.ok?r.json():null;})
+.then(function(m){var imgs=(m&&m.images)||[];_dayCache[day]=imgs;return imgs;})
+.catch(function(){_dayCache[day]=[];return [];});}
 function _tryFocus(){if(!_focus)return;curFolder='';_folderUserSet=true;renderFolders();filter();
 var ix=-1;for(var k=0;k<VIEW.length;k++){if(VIEW[k].file===_focus||VIEW[k].name===_focus){ix=k;break;}}
 if(ix>=0){open(ix);_focus='';}}
 function _apply(m){DATA=m.images||[];if(m.blur)document.body.classList.add('blur');renderFolders();filter();
 if(!DATA.length&&m&&m.building){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing your output folder… '+
 '(first run — can take ~30 s for large folders; it will fill in automatically)</p>';}}
+// Barre laterale construite depuis days.json (pas depuis DATA) quand on est en Outputs.
+function renderDays(){var h='<div class="f'+(curFolder===''?' active':'')+'" data-f=""><span>All</span>'+
+'<span class="cnt">'+DAYS.reduce(function(a,d){return a+(d.count||0);},0)+'</span></div>';
+DAYS.forEach(function(d){var isH=hidden.has(d.date);if(isH&&!showHidden)return;
+h+='<div class="f'+(curFolder===d.date?' active':'')+(isH?' hidden-f':'')+'" data-f="'+esc(d.date)+'">'+
+'<span>'+esc(d.date)+'</span><span><span class="cnt">'+d.count+'</span>'+
+'<button class="hb" data-h="'+esc(d.date)+'">'+(isH?'show':'hide')+'</button></span></div>';});
+folders.innerHTML=h;}
+// Affiche un jour (ou tout, si recherche / vue All)
+function showDay(day){curFolder=day||'';renderDays();
+if(_searching||curFolder===''){return _ensureAll().then(function(){filter();});}
+return _fetchDay(curFolder).then(function(imgs){DATA=imgs;filter();_tryFocus();});}
+// Charge TOUS les jours (recherche globale ou vue All), progressivement.
+function _ensureAll(){if(_allLoaded)return Promise.resolve();
+grid.innerHTML='<p style="padding:20px;color:#8b98ad">Loading all days…</p>';
+return Promise.all(DAYS.map(function(d){return _fetchDay(d.date);})).then(function(lists){
+DATA=[].concat.apply([],lists);_allLoaded=true;});}
+function loadOutputs(){
+return fetch('_index/'+'days.json?t='+Date.now()).then(function(r){return r.ok?r.json():null;})
+.then(function(idx){
+if(!idx||!idx.days||!idx.days.length){return _loadLegacy(6);}   // repli: manifest global
+DAYS=idx.days;_gen=idx.generated||'';if(idx.blur)document.body.classList.add('blur');
+if(!_folderUserSet&&DAYS.length){var t=idx.today;
+curFolder=(DAYS.some(function(d){return d.date===t;})?t:DAYS[0].date);}
+renderDays();return showDay(curFolder);}).catch(function(){return _loadLegacy(6);});}
+// Repli sur l'ancien manifest global (index pas encore migre).
+function _loadLegacy(tries){return fetch('_index/manifest.json?t='+Date.now())
+.then(function(r){if(!r.ok)throw 0;return r.json();})
+.then(function(m){_gen=m.generated||'';_allLoaded=true;_apply(m);_tryFocus();})
+.catch(function(){if(tries>0){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing…</p>';
+setTimeout(function(){_loadLegacy(tries-1);},1200);}
+else grid.innerHTML='<p style="padding:20px;color:#8b98ad">No index yet. Click Reindex in crispz-studio.</p>';});}
 function loadSource(src){curSource=src;_folderUserSet=false;curFolder='';
 [].slice.call(document.querySelectorAll('.src')).forEach(function(b){b.classList.toggle('active',b.getAttribute('data-s')===src);});
 var _fa=document.getElementById('fetchall');
 if(_fa)_fa.style.display=(CZ_BATCH&&(src==='loras'||src==='models'))?'':'none';
+if(src==='outputs'){DAYS=[];_dayCache={};_allLoaded=false;return loadOutputs();}
 fetch(_srcUrls[src]+'?t='+Date.now()).then(function(r){return r.ok?r.json():null;}).then(function(m){
-if(m){if(src==='outputs')_gen=m.generated||'';_apply(m);_tryFocus();}
+if(m){_apply(m);_tryFocus();}
 else{DATA=[];renderFolders();grid.innerHTML='<p style="padding:20px;color:#8b98ad">No '+src+' catalog yet (building in background). Reopen the Asset Browser in a few seconds.</p>';cnt.textContent='0 / 0';}});}
 [].slice.call(document.querySelectorAll('.src')).forEach(function(b){b.onclick=function(){loadSource(b.getAttribute('data-s'));};});
+// Rafraichissement: days.json est minuscule -> on peut le sonder longtemps sans cout.
 function _poll(n){if(n<=0)return;setTimeout(function(){
-fetch('_index/manifest.json?t='+Date.now()).then(r=>r.ok?r.json():null).then(m=>{
-if(m&&m.generated&&m.generated!==_gen&&curSource==='outputs'){_gen=m.generated;_apply(m);}_poll(n-1);}).catch(()=>_poll(n-1));},2000);}
-function _load(tries){fetch('_index/manifest.json?t='+Date.now()).then(r=>{if(!r.ok)throw 0;return r.json();})
-.then(m=>{_gen=m.generated||'';_apply(m);_poll(90);})
-.catch(e=>{if(tries>0){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing…</p>';setTimeout(()=>_load(tries-1),1200);}
-else grid.innerHTML='<p style="padding:20px;color:#8b98ad">No manifest. Click Reindex in crispz-studio.</p>';});}
+fetch('_index/'+'days.json?t='+Date.now()).then(function(r){return r.ok?r.json():null;}).then(function(idx){
+if(idx&&idx.generated&&idx.generated!==_gen&&curSource==='outputs'){_gen=idx.generated;DAYS=idx.days||[];
+_dayCache={};_allLoaded=false;renderDays();showDay(curFolder);}_poll(n-1);}).catch(function(){_poll(n-1);});},3000);}
 (function(){try{var u=new URL(location.href);var s=u.searchParams.get('src');
 _focus=u.searchParams.get('focus')||'';
-if(s&&_srcUrls[s]){loadSource(s);return;}}catch(e){}
-_load(25);})();
+if(s&&_srcUrls[s]&&s!=='outputs'){loadSource(s);return;}}catch(e){}
+loadOutputs().then(function(){_poll(200);});})();
 </script></body></html>
 """
 
