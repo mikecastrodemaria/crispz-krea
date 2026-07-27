@@ -3,6 +3,24 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.12.1 — 2026-07-27 — New `lcm` sampler (LCM flow-matching)
+
+- **Sampler** gains **`lcm`** (`FlowMatchLCMScheduler`) next to `euler` and `unipc`:
+  designed for **few steps with guidance ~0-1**, so it suits distilled / Turbo checkpoints.
+  Works with all four schedules (`sgm_uniform` / `beta` / `karras` / `exponential`) — the
+  12 sampler×schedule combinations were verified to build.
+- Falls back to `euler` (with a log line) if the installed diffusers has no
+  `FlowMatchLCMScheduler`.
+- **Why not `dpmpp_sde`** (recommended by some Civitai model cards): the Z-Image pipeline
+  imposes custom `sigmas`, and `DPMSolverSDEScheduler.set_timesteps` does not accept them
+  (it also needs the `torchsde` package). Same reason DPM++ 2M / DPM2a are not exposed.
+  Note that ComfyUI's **`simple` scheduler == our default `sgm_uniform`**, and ComfyUI's
+  **CFG 1.0 == our guidance 0** — so those model cards are already satisfied by the
+  defaults.
+- Files: `cz_pipeline.py` (`SAMPLER_CHOICES`, `_build_scheduler`), `README.md`,
+  `config_modification_tutorial.txt`, `tests/test_xyz.py` (sampler suggestions now derive
+  from `SAMPLER_CHOICES` instead of a hardcoded list).
+
 ## 1.12.0 — 2026-07-20 — X/Y/Z grid: compare LoRA files (epochs, versions)
 
 Comparing several trainings of the same LoRA — epochs of one run, or successive CivitAI

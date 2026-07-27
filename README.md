@@ -377,7 +377,11 @@ python app.py --txt2img --prompt "..." --zimage-model "D:/models/z-image-base.sa
 
 Next to the **CFG guidance** slider there are two dropdowns, ComfyUI-style:
 
-- **Sampler**: `euler` (native flow-matching, default) or `unipc` (UniPC multistep).
+- **Sampler**: `euler` (native flow-matching, default), `unipc` (UniPC multistep) or
+  `lcm` (LCM flow-matching — few steps, guidance ~0-1: suited to distilled/Turbo models).
+  ComfyUI's `dpmpp_sde` is **not** available: it cannot take the custom sigmas the
+  Z-Image pipeline imposes (and needs `torchsde`). ComfyUI's `simple` scheduler is the
+  same thing as our default `sgm_uniform`.
   Both accept the pipeline's custom sigmas + dynamic shift. The diffusers DPM++ 2M /
   DPM2a schedulers reject custom sigmas, so they are **not available** for Z-Image
   (this is a diffusers limitation, unlike ComfyUI). An incompatible choice falls
@@ -719,7 +723,7 @@ Every UI setting has a CLI flag and a prefs key:
 | Seed | `--seed` | `seed` | `-1` |
 | ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
-| Sampler | `--sampler {euler,unipc}` | "Sampler" dropdown (next to CFG) | `default_sampler` (`euler`) |
+| Sampler | `--sampler {euler,unipc,lcm}` | "Sampler" dropdown (next to CFG) | `default_sampler` (`euler`) |
 | Sigma schedule | `--schedule {sgm_uniform,beta,karras,exponential}` | "Schedule" dropdown | `default_schedule` (`sgm_uniform`) |
 | CPU offload (diffusion) | `--cpu-offload` | - | `none` |
 | Diffusion tile (4K+) | `--refine-tile` | - | `0` (whole image) |
