@@ -107,7 +107,10 @@ Tabbed Gradio UI + scriptable CLI + persistent server (`--serve`).
 |---|---|
 | `run.bat` | Standard local launch (127.0.0.1:7860). |
 | `xyz_example.bat` | Ready-to-run **X/Y/Z grid** CLI example (`xyz_example.bat "your prompt"`) — 2×2 Steps × Guidance, prints the sheet path. Unix: `xyz_example.sh`. |
-| `boot_check_rtx5090.bat` | GPU / venv / torch / models diagnostic, then launch. |
+| `boot_check.bat` | **Smart boot diagnostic**, any GPU (RTX 50xx/40xx/30xx/20xx…): driver, and — the decisive check — whether the installed torch build actually has kernels for your card's `sm_XX`. That is what catches *"RTX 50xx + non-cu128 torch"* (`WinError 127 torch_cuda.dll`) **before** the app crashes, with the exact fix to run. Then reports VRAM and recommends CPU offload / tiling / resolution for *your* card, checks the diffusers pipelines and lists your real model folders (read from `config.txt`, not hardcoded). `--no-run` diagnoses without launching. |
+| `boot_check_lan.bat` / `boot_check_web.bat` | Same diagnostic, then **LAN** (`0.0.0.0`) or **Cloudflare tunnel**. Both warn first: the app has **no authentication** (see `SECURITY.md`). |
+| `boot_check_rtx5090.bat` | Kept as an alias of `boot_check.bat` (the check is no longer 5090-specific). |
+| `update.bat` / `update.sh` | **Update after a GitHub pull**: refuses to `git pull` over uncommitted work, reinstalls dependencies **only if the requirements file changed**, warns if `torch` was swapped (a transitive resolve can replace a `+cu128` build with a CPU wheel), re-runs the hardware check, verifies the app still imports, and lists **new config keys** added to `config-sample.txt` (your `config.txt` is never overwritten). `--no-pull` / `--force-deps` / `--shared`. |
 | `run_quality_rtx5090.bat` | Local launch + RTX-5090 CUDA env. |
 | `run_quality_rtx5090_lan.bat` | **LAN**: listens on `0.0.0.0`, prints your LAN URL. |
 | `run_quality_rtx5090_web.bat` | **Web via Cloudflare tunnel** (named tunnel or ephemeral quick tunnel). |
