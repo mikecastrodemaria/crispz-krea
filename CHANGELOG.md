@@ -3,6 +3,34 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.13.1 — 2026-07-27 — Security: upgrade Pillow / protobuf / sentencepiece (21 Dependabot alerts)
+
+Adding `requirements-lock.txt` made Dependabot match **pinned versions** instead of ranges,
+raising 37 alerts. Each was triaged against what the code actually calls.
+
+- **Upgraded**: `pillow 11.3.0 -> 12.3.0`, `protobuf 6.31.0 -> 7.35.1`,
+  `sentencepiece 0.1.96 -> 0.2.2` — **21 alerts closed**, and the advisory database reports
+  **0 remaining** for those three pins.
+- Pillow was the priority: it is the only flagged package that parses **files the user
+  supplies** (Input image, PNG Info), so its 18 advisories (PSD/FITS/JPEG2000 OOB, font and
+  PDF decompression bombs, `RankFilter`, `ImageCmsTransform`, `crop`/`paste` overflow…)
+  were genuinely reachable.
+- **Deliberately not upgraded** (documented per-package in `SECURITY.md`): rembg (server-only
+  flaws, server never started, patched line needs Python 3.11 while this runs 3.10), gradio
+  (`gr.load()`/OAuth/audio unused, Windows traversal needs Python 3.13+; fix needs a 6.x
+  major bump the `<6` pin deliberately excludes), transformers (`Trainer`/LightGlue unused,
+  `trust_remote_code` never set; fix needs 5.x), torch (`jit.script`/`lstm_cell`/
+  `unpack_sequence` never called; fixes have no `+cu128` build, so upgrading would break
+  RTX 5090 support to close unreachable flaws).
+- `torch` was protected during the upgrade (`pip install --no-deps`) — the earlier incident
+  where a transitive resolve replaced `2.8.0+cu128` with a CPU build must not repeat.
+- Verified on the real environment: `torch 2.8.0+cu128` + CUDA still load, `build_ui()`
+  builds, the image chain (save + metadata round-trip + thumbnail + `RankFilter` + `crop` +
+  WebP) works under Pillow 12, and the test suites pass.
+- `SECURITY.md`'s alert section was rewritten: it still claimed the repo had *no lockfile*,
+  which is what changed.
+- Files: `requirements-lock.txt`, `SECURITY.md`.
+
 ## 1.13.0 — 2026-07-27 — Asset Browser: per-day index + incremental indexing (Fooocus architecture)
 
 Follow-up to 1.12.2. The metadata cache fixed the *server* side (295 s -> 3,7 s), but the
