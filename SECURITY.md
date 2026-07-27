@@ -31,23 +31,39 @@ Reports that depend on the app being deliberately exposed to a network, or on th
 operator loading model files they do not trust, are considered configuration choices
 rather than vulnerabilities in crispz-studio.
 
-## Known Dependabot alerts (assessed, not applicable)
+## Known Dependabot alerts
 
-This repository has **no lockfile** — dependencies are declared as ranges in
-`requirements.txt`. Dependabot therefore reports *"the currently installed version
-can't be determined"* and matches the **declared range** against the advisory range,
-not the version actually installed. Both open alerts are artifacts of that matching:
+Since `requirements-lock.txt` was added, Dependabot matches **pinned versions** instead of
+ranges, and reports every advisory that touches them. Each one is either **fixed by an
+upgrade** or **assessed as unreachable** in this application. The scope above is what makes
+that distinction meaningful: crispz-studio is a local app bound to 127.0.0.1, and the
+alerts that need a network-exposed service are out of the supported configuration.
 
-| Alert | Package | Severity | Advisory range | Patched | Declared here |
-|---|---|---|---|---|---|
-| #3 | transformers | high | `< 5.5.0` | 5.5.0 | `>=4.51,<5` |
-| #4 | gradio | low | `< 6.15.1` | 6.15.1 | `>=4.44,<6` |
+### Fixed by upgrading
 
-Both advisory ranges sweep in an entire earlier release line: the transformers flaw was
-found in **5.2.0** but the range covers all of 4.x, and the gradio flaw was found in
-**6.14.0** but the range covers all of 5.x. Neither upper bound here can reach the
-patched version, and the `<6` bound on gradio is deliberate (Brotli middleware bug with
-h11, documented in `requirements.txt`).
+| Package | Was | Now | Alerts closed |
+|---|---|---|---|
+| pillow | 11.3.0 | **12.3.0** | 18 (PSD/FITS/JPEG2000/McIdas OOB, font + PDF decompression bombs, `RankFilter`, `ImageCmsTransform`, `paste`/`crop` overflow, TGA RLE, `WindowsViewer`) |
+| protobuf | 6.31.0 | **7.35.1** | 2 (JSON recursion bypass, DoS) |
+| sentencepiece | 0.1.96 | **0.2.2** | 1 (heap overflow) |
+
+Pillow was the priority: it is the one flagged package that parses **files the user
+supplies** (Input image, PNG Info drop), so those advisories were genuinely reachable.
+Verified against the GitHub advisory database: **0 advisories remain** for the three
+pinned versions.
+
+### Assessed — not reachable in this application
+
+| Package | Alerts | Why it does not apply |
+|---|---|---|
+| rembg | 4 | All four target the **rembg HTTP server** (`/api/remove`, CORS, custom-model path traversal). crispz imports `remove()` as a **library** and never starts that server. Two of the four have **no patched release at all**, and the patched line (2.0.75+) requires **Python ≥ 3.11** while this app runs on 3.10. |
+| gradio | 6 | `gr.load()` SSRF and both OAuth flaws — **neither API is used** (`git grep 'gr\.load(\|oauth'` is empty). Windows absolute-path traversal needs **Python 3.13+** (this app runs 3.10). Audio cache key needs `gr.Audio`, which does not exist here. Cookie injection needs a network-exposed instance. Patching would require **gradio 6.x**, a major bump; the `<6` pin is deliberate (Brotli/h11 middleware bug, documented in `requirements.txt`). |
+| transformers | 3 | The `Trainer` RCE needs `Trainer` (no training here), the LightGlue RCE needs that model (never invoked), and the general RCE path needs `trust_remote_code=True` — **never set** anywhere in the codebase. Patching needs **transformers 5.x**, which diffusers' current pin does not support. |
+| torch | 3 | `torch.jit.script`, `lstm_cell` and `unpack_sequence` are **not called** anywhere in the codebase. All three are Moderate/Low, and their fixes land in torch 2.10+/2.13+ — there is no `+cu128` build of those for the RTX 5090 setup this project targets, so upgrading would break GPU support to close unreachable flaws. |
+
+The upgrades were verified on the real environment: `torch 2.8.0+cu128` and CUDA still
+load, `build_ui()` still builds, the full image chain (save + metadata round-trip +
+thumbnail + `RankFilter` + `crop` + WebP) still works, and the test suites pass.
 
 ### transformers — CVE-2026-5241 (LightGlue model loading)
 
