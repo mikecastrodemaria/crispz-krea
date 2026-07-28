@@ -89,7 +89,7 @@ g, st, msg = app._gallery_load("out", "Newest", "")
 check("gallery_load returns list+status", isinstance(g, list) and "image" in msg)
 
 # Batch img2img: le slider "Image number" doit appeler run() n fois, seed +1 par image
-# (regression: la branche Input image ignorait image_number et rendait 1 image).
+# (regression 1.11.2: la branche Input image ignorait image_number et rendait 1 image).
 _calls = []
 
 

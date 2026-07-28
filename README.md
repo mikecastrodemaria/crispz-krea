@@ -2,7 +2,7 @@
 
 > Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
 > [crispz](https://github.com/mikecastrodemaria/crispz)).
-> Current version: **1.7.1** — see [CHANGELOG.md](CHANGELOG.md).
+> Current version: **1.15.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 ![crispz-studio — Z-Image creation + enhancement studio](assets/screenshot.png)
 
@@ -107,10 +107,9 @@ Tabbed Gradio UI + scriptable CLI + persistent server (`--serve`).
 |---|---|
 | `run.bat` | Standard local launch (127.0.0.1:7860). |
 | `xyz_example.bat` | Ready-to-run **X/Y/Z grid** CLI example (`xyz_example.bat "your prompt"`) — 2×2 Steps × Guidance, prints the sheet path. Unix: `xyz_example.sh`. |
-| `boot_check_rtx5090.bat` | GPU / venv / torch / models diagnostic, then launch. |
-| `run_quality_rtx5090.bat` | Local launch + RTX-5090 CUDA env. |
-| `run_quality_rtx5090_lan.bat` | **LAN**: listens on `0.0.0.0`, prints your LAN URL. |
-| `run_quality_rtx5090_web.bat` | **Web via Cloudflare tunnel** (named tunnel or ephemeral quick tunnel). |
+| `boot_check.bat` | **Smart boot diagnostic**, any GPU (RTX 50xx/40xx/30xx/20xx…): driver, and — the decisive check — whether the installed torch build actually has kernels for your card's `sm_XX`. That is what catches *"RTX 50xx + non-cu128 torch"* (`WinError 127 torch_cuda.dll`) **before** the app crashes, with the exact fix to run. Then reports VRAM and recommends CPU offload / tiling / resolution for *your* card, checks the diffusers pipelines and lists your real model folders (read from `config.txt`, not hardcoded). `--no-run` diagnoses without launching. |
+| `boot_check_lan.bat` / `boot_check_web.bat` | Same diagnostic, then **LAN** (`0.0.0.0`) or **Cloudflare tunnel**. Both warn first: the app has **no authentication** (see `SECURITY.md`). |
+| `update.bat` / `update.sh` | **Update after a GitHub pull**: refuses to `git pull` over uncommitted work, reinstalls dependencies **only if the requirements file changed**, warns if `torch` was swapped (a transitive resolve can replace a `+cu128` build with a CPU wheel), re-runs the hardware check, verifies the app still imports, and lists **new config keys** added to `config-sample.txt` (your `config.txt` is never overwritten). `--no-pull` / `--force-deps` / `--shared`. |
 
 They set `GRADIO_SERVER_NAME` / `GRADIO_SERVER_PORT` (Gradio reads them) and call `run.bat`.
 
@@ -377,7 +376,11 @@ python app.py --txt2img --prompt "..." --zimage-model "D:/models/z-image-base.sa
 
 Next to the **CFG guidance** slider there are two dropdowns, ComfyUI-style:
 
-- **Sampler**: `euler` (native flow-matching, default) or `unipc` (UniPC multistep).
+- **Sampler**: `euler` (native flow-matching, default), `unipc` (UniPC multistep) or
+  `lcm` (LCM flow-matching — few steps, guidance ~0-1: suited to distilled/Turbo models).
+  ComfyUI's `dpmpp_sde` is **not** available: it cannot take the custom sigmas the
+  Z-Image pipeline imposes (and needs `torchsde`). ComfyUI's `simple` scheduler is the
+  same thing as our default `sgm_uniform`.
   Both accept the pipeline's custom sigmas + dynamic shift. The diffusers DPM++ 2M /
   DPM2a schedulers reject custom sigmas, so they are **not available** for Z-Image
   (this is a diffusers limitation, unlike ComfyUI). An incompatible choice falls
@@ -719,7 +722,7 @@ Every UI setting has a CLI flag and a prefs key:
 | Seed | `--seed` | `seed` | `-1` |
 | ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
-| Sampler | `--sampler {euler,unipc}` | "Sampler" dropdown (next to CFG) | `default_sampler` (`euler`) |
+| Sampler | `--sampler {euler,unipc,lcm}` | "Sampler" dropdown (next to CFG) | `default_sampler` (`euler`) |
 | Sigma schedule | `--schedule {sgm_uniform,beta,karras,exponential}` | "Schedule" dropdown | `default_schedule` (`sgm_uniform`) |
 | CPU offload (diffusion) | `--cpu-offload` | - | `none` |
 | Diffusion tile (4K+) | `--refine-tile` | - | `0` (whole image) |

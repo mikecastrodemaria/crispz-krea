@@ -186,6 +186,123 @@ def _ab_gen_thumbs(jobs, size, quality, force=False, progress=None, workers=None
     return res
 
 
+_META_CACHE_FILE = "meta_cache.json"
+DAYS_INDEX_FILE = "days.json"
+DAY_MANIFEST_FILE = "manifest.json"
+
+
+def _day_of(rel):
+    """Jour d'une image d'apres son sous-dossier ('2026-07-27/x.png' -> '2026-07-27').
+    Racine -> '(root)'."""
+    sub = os.path.dirname(rel)
+    return sub or "(root)"
+
+
+def _day_dir(out_dir, day):
+    return out_dir if day == "(root)" else os.path.join(out_dir, day)
+
+
+def _write_day_manifests(out_dir, entries, blur, thumb_size):
+    """Ecrit un manifest PAR JOUR (dans le dossier du jour, facon Fooocus) + l'index
+    _index/days.json. L'UI ouvre alors instantanement: elle lit days.json (quelques Ko)
+    et ne charge que le manifest du jour affiche, au lieu d'un manifest global de ~9 Mo
+    contenant 9000+ images."""
+    by_day = {}
+    for e in entries:
+        by_day.setdefault(e.get("day") or "(root)", []).append(e)
+    days = []
+    for day, imgs in by_day.items():
+        payload = {"date": day, "count": len(imgs), "blur": bool(blur),
+                   "thumb_size": int(thumb_size),
+                   "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                   "images": imgs}
+        target_dir = _day_dir(out_dir, day)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            _write_atomic_text(os.path.join(target_dir, DAY_MANIFEST_FILE),
+                               json.dumps(payload, ensure_ascii=False))
+            days.append({"date": day, "count": len(imgs)})
+        except Exception as e:
+            _dbg(f"day manifest failed for {day}: {e}")
+    days.sort(key=lambda x: x["date"], reverse=True)
+    idx = {"generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+           "today": datetime.date.today().isoformat(),
+           "blur": bool(blur), "thumb_size": int(thumb_size),
+           "total": sum(d["count"] for d in days), "days": days}
+    _write_atomic_text(os.path.join(out_dir, "_index", DAYS_INDEX_FILE),
+                       json.dumps(idx, ensure_ascii=False))
+    return days
+
+
+# Serialise les mises a jour incrementales: deux images sauvees en parallele feraient
+# un read-modify-write concurrent sur le meme manifest de jour (perte d'entree).
+_INCR_LOCK = threading.Lock()
+
+
+def _entry_for(rel, thumb_rel, path, meta):
+    """Entree de manifest pour une image. UNE seule definition, partagee par la
+    reindexation complete et le hook incremental -> les deux chemins ne peuvent pas
+    diverger sur le format."""
+    meta = meta or {}
+    sub = os.path.dirname(rel)
+    try:
+        date = sub if (len(sub) == 10 and sub[4] == "-") else \
+            datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        date = sub
+    return {
+        "file": rel, "thumb": thumb_rel, "date": date, "day": sub or "(root)",
+        "prompt": meta.get("prompt", ""), "negative": meta.get("negative", ""),
+        "seed": meta.get("seed"), "steps": meta.get("steps"),
+        "guidance": meta.get("guidance"), "size": meta.get("size"), "mode": meta.get("mode"),
+        "model": (os.path.basename(str(meta["model"])) if meta.get("model") else ""),
+        "loras": meta.get("loras"), "styles": meta.get("styles"),
+        "sampler": meta.get("sampler", ""),
+    }
+
+
+def _load_meta_cache(idx_dir):
+    """Cache des metadonnees d'images: rel -> {mtime, size, meta}. Relire les tags PNG
+    coute ~25 ms/image (mesure: 229 s pour 9278 images) et c'est refait a CHAQUE
+    ouverture alors que 99% des fichiers n'ont pas bouge. Defensif: un cache illisible
+    est ignore (on repart de zero), jamais d'erreur bloquante."""
+    p = os.path.join(idx_dir, _META_CACHE_FILE)
+    try:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("files"), dict):
+                return data["files"]
+    except Exception as e:
+        _dbg(f"meta cache unreadable, rebuilding: {e}")
+    return {}
+
+
+def _save_meta_cache(idx_dir, files):
+    try:
+        _write_atomic_text(os.path.join(idx_dir, _META_CACHE_FILE),
+                           json.dumps({"files": files}, ensure_ascii=False))
+    except Exception as e:
+        _dbg(f"meta cache write failed: {e}")
+
+
+def _meta_cached(cache, rel, path):
+    """Metadonnees de `path`, depuis le cache si le fichier n'a pas change (mtime+taille),
+    sinon relues et mises en cache. Renvoie (meta, from_cache)."""
+    try:
+        st = os.stat(path)
+        sig = [int(st.st_mtime), int(st.st_size)]
+    except Exception:
+        sig = None
+    hit = cache.get(rel)
+    if sig and isinstance(hit, dict) and hit.get("sig") == sig and isinstance(hit.get("meta"), dict):
+        return hit["meta"], True
+    meta = _read_image_meta(path) or {}
+    if sig:
+        cache[rel] = {"sig": sig, "meta": meta}
+    return meta, False
+
+
 def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=True,
                background_thumbs=False):
     """Ecrit index.html + _index/manifest.json (+ thumbnails). Recursif (sous-dossiers
@@ -196,7 +313,10 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
     idx_dir = os.path.join(d, "_index")
     os.makedirs(os.path.join(idx_dir, "thumbs"), exist_ok=True)
     _write_atomic_text(os.path.join(d, "index.html"), _render_spa())
+    meta_cache = _load_meta_cache(idx_dir)
+    fresh_cache, hits, reads = {}, 0, 0
     entries, jobs = [], []
+    t_idx = time.time()
     for rel, p in _ab_scan(d):
         thumb_rel = rel  # fallback = image complete
         trel = "_index/thumbs/" + os.path.splitext(rel)[0] + ".jpg"
@@ -215,26 +335,25 @@ def ab_reindex(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=Tr
                     thumb_rel = trel
                 except Exception as e:
                     _dbg(f"ab thumb failed {rel}: {e}")
-        meta = _read_image_meta(p)
-        sub = os.path.dirname(rel)
-        try:
-            date = sub if (len(sub) == 10 and sub[4] == "-") else \
-                datetime.datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            date = sub
-        entries.append({
-            "file": rel, "thumb": thumb_rel, "date": date, "day": sub or "(root)",
-            "prompt": meta.get("prompt", ""), "negative": meta.get("negative", ""),
-            "seed": meta.get("seed"), "steps": meta.get("steps"),
-            "guidance": meta.get("guidance"), "size": meta.get("size"), "mode": meta.get("mode"),
-            "model": (os.path.basename(str(meta["model"])) if meta.get("model") else ""),
-            "loras": meta.get("loras"), "styles": meta.get("styles"), "sampler": meta.get("sampler", ""),
-        })
+        meta, cached = _meta_cached(meta_cache, rel, p)
+        # On ne garde que les fichiers encore presents -> le cache ne gonfle pas
+        # indefiniment quand des images sont supprimees.
+        if rel in meta_cache:
+            fresh_cache[rel] = meta_cache[rel]
+        hits += 1 if cached else 0
+        reads += 0 if cached else 1
+        entries.append(_entry_for(rel, thumb_rel, p, meta))
     manifest = {"count": len(entries), "blur": bool(blur), "thumb_size": int(thumb_size),
                 "pending_thumbs": len(jobs),
                 "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "images": entries}
     _write_atomic_text(os.path.join(idx_dir, "manifest.json"),
                        json.dumps(manifest, ensure_ascii=False))
+    # Index par jour (ouverture instantanee) EN PLUS du manifest global, qui reste ecrit
+    # pour la recherche globale et la compatibilite descendante.
+    _write_day_manifests(d, entries, blur, thumb_size)
+    _save_meta_cache(idx_dir, fresh_cache)
+    _log(f"asset-browser: indexed {len(entries)} image(s) in {time.time() - t_idx:.1f}s "
+         f"({hits} from meta cache, {reads} read)")
     if jobs and background_thumbs:
         threading.Thread(target=_ab_gen_thumbs, args=(jobs, int(thumb_size), int(quality)),
                          daemon=True).start()
@@ -267,6 +386,91 @@ def ab_open_fast(output_dir, thumb_size=256, quality=85, blur=False, gen_thumbs=
                                   background_thumbs=True),
         daemon=True).start()
     return os.path.join(d, "index.html")
+
+
+def on_image_saved(image_path, output_dir=None, meta=None):
+    """Hook incremental (facon Fooocus on_image_logged): indexe UNE image au moment ou
+    elle est sauvegardee -> miniature + ajout au manifest de son jour + refresh de
+    days.json. L'Asset Browser reste ainsi a jour sans jamais rescanner le dossier.
+
+    Toujours silencieux: une erreur ici ne doit JAMAIS casser une generation."""
+    if not _ab_get("enabled"):
+        return False
+    try:
+        d = _ab_resolve_dir(output_dir or DEFAULT_OUTPUT_DIR)
+        ap = os.path.abspath(image_path)
+        if not os.path.isfile(ap) or not ap.lower().endswith(IMG_EXTS):
+            return False
+        rel = os.path.relpath(ap, d).replace("\\", "/")
+        if rel.startswith(".."):
+            return False                       # image hors du dossier de sortie
+        day = _day_of(rel)
+        size = int(_ab_get("thumbnail_size") or 256)
+        quality = int(_ab_get("thumbnail_quality") or 85)
+        with _INCR_LOCK:
+            # 1) miniature
+            trel = "_index/thumbs/" + os.path.splitext(rel)[0] + ".jpg"
+            tp = os.path.join(d, trel)
+            thumb_rel = rel
+            if _ab_get("generate_thumbnails"):
+                try:
+                    os.makedirs(os.path.dirname(tp), exist_ok=True)
+                    _ab_make_thumb(ap, tp, size, quality)
+                    thumb_rel = trel
+                except Exception as e:
+                    _dbg(f"incr thumb failed {rel}: {e}")
+            elif os.path.isfile(tp):
+                thumb_rel = trel
+            # 2) entree (meta fournie par l'appelant -> zero relecture disque)
+            m = meta if isinstance(meta, dict) else (_read_image_meta(ap) or {})
+            entry = _entry_for(rel, thumb_rel, ap, m)
+            # 3) manifest du jour: remplace l'entree existante, plus recent en tete
+            dd = _day_dir(d, day)
+            mp = os.path.join(dd, DAY_MANIFEST_FILE)
+            man = {"date": day, "images": []}
+            try:
+                if os.path.isfile(mp):
+                    with open(mp, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict) and isinstance(loaded.get("images"), list):
+                        man = loaded
+            except Exception as e:
+                _dbg(f"day manifest unreadable ({day}), recreated: {e}")
+            imgs = [x for x in man.get("images", []) if x.get("file") != rel]
+            imgs.insert(0, entry)
+            man.update({"date": day, "count": len(imgs), "images": imgs,
+                        "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+            os.makedirs(dd, exist_ok=True)
+            _write_atomic_text(mp, json.dumps(man, ensure_ascii=False))
+            # 4) days.json (compte du jour) — pas de rescan, on lit l'index existant
+            _bump_days_index(d, day, len(imgs))
+        return True
+    except Exception as e:
+        _dbg(f"on_image_saved failed for {image_path}: {e}")
+        return False
+
+
+def _bump_days_index(out_dir, day, count):
+    """Met a jour le compte d'un jour dans _index/days.json sans rescanner le dossier."""
+    idx_dir = os.path.join(out_dir, "_index")
+    p = os.path.join(idx_dir, DAYS_INDEX_FILE)
+    idx = {"days": []}
+    try:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict) and isinstance(loaded.get("days"), list):
+                idx = loaded
+    except Exception as e:
+        _dbg(f"days.json unreadable, recreated: {e}")
+    days = [x for x in idx.get("days", []) if x.get("date") != day]
+    days.append({"date": day, "count": int(count)})
+    days.sort(key=lambda x: str(x.get("date")), reverse=True)
+    idx.update({"days": days, "total": sum(int(x.get("count") or 0) for x in days),
+                "today": datetime.date.today().isoformat(),
+                "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+    os.makedirs(idx_dir, exist_ok=True)
+    _write_atomic_text(p, json.dumps(idx, ensure_ascii=False))
 
 
 def _find_preview(safepath):

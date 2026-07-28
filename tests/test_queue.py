@@ -35,14 +35,25 @@ def test_label():
 
 
 def test_move():
-    items = [{"label": "a"}, {"label": "b"}, {"label": "c"}]
+    # _q_move mute la liste IN-PLACE (voulu): _ui_queue_run tient une reference sur
+    # cet objet d'etat, donc un reordonnancement doit lui etre visible. On repart
+    # d'une liste neuve a chaque cas plutot que d'attendre une fonction pure.
+    def fresh():
+        return [{"label": "a"}, {"label": "b"}, {"label": "c"}]
+
+    items = fresh()
     out, sel = cz_ui._q_move(items, 2, -1)
     assert [i["label"] for i in out] == ["a", "c", "b"] and sel == 1
+    assert out is items, "doit muter l'objet partage, pas en renvoyer une copie"
+
+    items = fresh()
     out, sel = cz_ui._q_move(items, 0, -1)          # bord haut: inchange
     assert [i["label"] for i in out] == ["a", "b", "c"] and sel == 0
+
+    items = fresh()
     out, sel = cz_ui._q_move(items, None, 1)         # pas de selection
     assert sel is None and len(out) == 3
-    assert items == [{"label": "a"}, {"label": "b"}, {"label": "c"}]  # pure (copie)
+    assert [i["label"] for i in out] == ["a", "b", "c"]
 
 
 def test_remove():

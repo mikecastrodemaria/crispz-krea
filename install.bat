@@ -132,11 +132,28 @@ set REQFILE=requirements.txt
 if "!ISOLATED!"=="1" if exist "requirements-lock.txt" set REQFILE=requirements-lock.txt
 echo Installation des dependances depuis !REQFILE! ...
 if "!REQFILE!"=="requirements-lock.txt" echo   ^(inclut torch cu128, ~3,5 Go de telechargement la premiere fois^)
-!RUNPY! -m pip install -r !REQFILE!
+REM Pillow est filtre du fichier: gradio 5.50 declare pillow^<12 et refuserait
+REM de resoudre avec le pin 12.x. Il est pose juste apres, en --no-deps.
+REM Le pin reste dans le lock pour que Dependabot voie la version corrigee.
+set "REQTMP=%TEMP%\cz_req_nopillow.txt"
+findstr /V /B /C:"pillow==" "!REQFILE!" > "!REQTMP!"
+!RUNPY! -m pip install -r "!REQTMP!"
 if errorlevel 1 (
     echo [ERREUR] echec pip install. Verifie le log ci-dessus.
     exit /b 1
 )
+echo.
+
+REM 5bis) Pillow, installe A PART et en --no-deps.
+REM   gradio 5.50 declare "pillow<12.0", mais les CVE Pillow (dont celles
+REM   atteignables via les images que l'utilisateur ouvre) ne sont corrigees
+REM   qu'en 12.x. Cette borne de gradio est conservatrice: verifie sur cette
+REM   base de code, Pillow 12 fonctionne. On installe donc apres coup, sans
+REM   redeclencher la resolution qui refuserait la combinaison.
+set "PILLOW_PIN=pillow==12.3.0"
+echo Installation de !PILLOW_PIN! ^(a part: contourne la borne pillow^<12 de gradio^)...
+!RUNPY! -m pip install --no-deps --upgrade "!PILLOW_PIN!"
+if errorlevel 1 echo [AVERT] echec install Pillow -^> version heritee conservee.
 echo.
 
 REM 6) Verifier que diffusers expose le pipeline de cette famille de modele
