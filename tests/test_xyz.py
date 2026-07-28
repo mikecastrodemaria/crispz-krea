@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image  # noqa: E402
 
 import cz_ui  # noqa: E402
+import cz_pipeline  # noqa: E402
 
 
 def _base_vals(prompt="a red cat on a sofa"):
@@ -108,9 +109,11 @@ def test_suggestions():
     fill, ph = cz_ui._xyz_suggestions("Steps")            # calibrage numerique
     assert fill == "4, 8, 12, 20, 28" and "4, 8" in ph
     fill, ph = cz_ui._xyz_suggestions("Sampler")          # liste fermee
-    assert cz_ui._xyz_parse_values(fill) == ["euler", "unipc"]
-    # Presets/repos viennent de la CONFIG: on ne code pas en dur des valeurs Z-Image,
-    # sinon le test casse sur les forks (FLUX/Qwen ont leurs propres presets et repos).
+    # Derive de la source de verite (cz_pipeline.SAMPLER_CHOICES): ajouter un sampler
+    # ne doit pas casser le test, mais la suggestion doit rester exhaustive.
+    assert cz_ui._xyz_parse_values(fill) == list(cz_pipeline.SAMPLER_CHOICES)
+    # Presets et repos viennent de la CONFIG: les deriver evite que ce test casse sur
+    # un fork (FLUX/Qwen ont leurs propres presets et repos de base) a chaque merge.
     fill, ph = cz_ui._xyz_suggestions("Performance")
     assert set(cz_ui._xyz_parse_values(fill)) == set(cz_ui.PERFORMANCE)
     fill, ph = cz_ui._xyz_suggestions("Checkpoint")       # repos officiels presents
@@ -139,7 +142,7 @@ def test_cli_apply():
     cz_cli._xyz_cli_apply("Guidance", 3.5, p, {})
     cz_cli._xyz_cli_apply("Denoise", 0.4, p, {})
     assert p["gen_steps"] == 12 and p["guidance"] == 3.5 and p["denoise"] == 0.4
-    # Preset pris dans la CONFIG (pas de nom code en dur: les forks ont d'autres presets).
+    # Preset pris dans la CONFIG (pas de nom code en dur: les forks en ont d'autres).
     _name = list(cz_ui.PERFORMANCE)[-1]
     _st, _g = cz_ui.PERFORMANCE[_name]
     cz_cli._xyz_cli_apply("Performance", _name, p, {})

@@ -3,6 +3,253 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## 1.15.0 — 2026-07-28 — Release: Asset Browser rearchitecture, security, GPU-agnostic tooling
+
+Consolidates everything since **v1.11.2**. Nothing new here beyond the last build change
+below — this entry marks the release boundary.
+
+**Asset Browser — the big one.** Opening it re-read the PNG metadata of every image on
+every open (**295 s** for 9 278 images) and shipped a **9,42 MB** manifest to the browser,
+while the SPA stopped polling after 180 s — so it never finished filling in. Rebuilt on the
+Fooocus design: a metadata cache (295 s → **3,7 s**), a tiny `days.json` plus one manifest
+per day (**5 400× less data** on open), and incremental indexing at save time (~15 ms/image,
+no rescan). Global search was kept, which Fooocus does not have on its Outputs tab.
+
+**Security.** 37 Dependabot alerts triaged against what the code actually calls: Pillow,
+protobuf and sentencepiece upgraded (**21 closed, 0 advisories left** on those pins), the
+other 16 assessed unreachable and dismissed with per-package reasons — documented in
+`SECURITY.md`, and the four Dependabot PRs closed with the reasoning.
+
+**Tooling.** `boot_check.bat` replaces the RTX-5090-only script and works on any card; its
+decisive check compares the GPU's `sm_XX` against the installed torch build, catching the
+`WinError 127 torch_cuda.dll` class of failure *before* launch. `update.bat`/`.sh` add the
+missing post-`git pull` step. New `lcm` sampler; LoRA weights can go negative (`-2..2`).
+
+- Last change in this release: the `pillow==12.3.0` pin stays in `requirements-lock.txt`
+  (so Dependabot sees the fixed version) and `install.*` / `update.*` filter that one line
+  out before `pip` runs, installing Pillow separately with `--no-deps`. Commenting it out
+  had fixed the install but left Dependabot matching the whole advisory range.
+
+## 1.14.1 — 2026-07-27 — Fix install (Pillow/gradio), sampler status, drop the RTX-5090 scripts
+
+Fallout from testing `install.bat` / `update.bat` / `run.bat` end to end.
+
+- **`install.bat` was broken** by the 1.13.1 security bump: `gradio 5.50` declares
+  `pillow<12.0`, so pinning `pillow==12.3.0` made a clean install fail with
+  `ResolutionImpossible`. The running venv had not noticed because the upgrade used
+  `--no-deps`. There is **no Pillow below 12 that fixes those CVEs** (11.3.0 is the last
+  11.x and leaves 19 advisories open), so Pillow is now installed **separately, after the
+  lock, with `--no-deps`** by `install.bat`/`.sh` — and re-applied by `update.bat`/`.sh` so
+  an update cannot silently regress it. gradio's bound is conservative; Pillow 12 is
+  verified working here (build_ui, save + metadata round-trip, thumbnails, `RankFilter`,
+  `crop`, WebP). The `<6` gradio pin stays deliberate.
+- **Sampler dropdown warning fixed**: `set_sampler` / `set_schedule` return a status
+  string but were wired to `None` outputs, so Gradio logged *"returned too many output
+  values"* on every change (any sampler, not just the new `lcm`). The status is now
+  **displayed** next to the dropdowns instead of being discarded.
+- **RTX-5090 scripts removed**: `boot_check_rtx5090.bat`, `run_quality_rtx5090.bat`,
+  `_lan`, `_web`. They are superseded by `boot_check.bat` / `_lan` / `_web`, which are
+  card-agnostic. Their one behaviour not yet covered — a fixed `GRADIO_SERVER_PORT=7860` —
+  was carried over. No launcher (including the Pinokio one) referenced them.
+- `config.txt` regains the inline `_help` documentation it had lost historically, plus the
+  24 keys added since it was created — user values preserved.
+- Files: `install.bat`, `install.sh`, `update.bat`, `update.sh`, `requirements-lock.txt`,
+  `cz_ui.py`, `boot_check.bat`, `README.md`, `VALIDATION.md`.
+
+## 1.14.0 — 2026-07-27 — Smart boot check (any GPU) + update scripts
+
+`boot_check_rtx5090.bat` only knew one card and hardcoded a model path. Replaced by a
+generic diagnostic, and the missing post-`git pull` step now exists.
+
+- **`boot_check.bat`** — works on any NVIDIA card. Beyond driver/VRAM/temperature, it runs
+  the check that actually matters: **is the GPU's `sm_XX` in the installed torch build's
+  arch list?** That is precisely the *"RTX 50xx + non-cu128 torch"* failure
+  (`WinError 127 … torch_cuda.dll`) hit earlier in this project — it is now caught **before
+  launch**, with the exact `pip install --index-url …` line to fix it, and the script stops
+  instead of letting the app die at the first CUDA allocation.
+- **Recommendations scale with the card**: `_hw_check.py` now maps compute capability to a
+  generation name (Blackwell / Ada / Ampere / Turing / Pascal) and derives CPU offload,
+  ESRGAN tiling, max resolution and dtype from the real VRAM. Thresholds come from figures
+  measured in this project (FLUX bf16 ≈ 33 GB with its encoder, GGUF Q8 ≈ 12,7 GB,
+  `sequential` ≈ 3 s/step vs `model` ≈ 1,1 s/step). The 12 GB tier is keyed at 11 GB, since
+  a "12 GB" card reports ~11,9 — putting it on `sequential` would have cost 3x for nothing.
+- **Model folders are read from `config.txt`** instead of a hardcoded `D:\…\Z-Image`.
+- **`boot_check_lan.bat` / `boot_check_web.bat`** — same diagnostic then LAN (`0.0.0.0`) or
+  Cloudflare tunnel; both print a **no-authentication warning** first, consistent with
+  `SECURITY.md`. `boot_check_rtx5090.bat` is kept as an alias.
+- **`update.bat` / `update.sh`** — the post-GitHub-update step: refuses to `git pull` over
+  uncommitted work (shows what is dirty), reinstalls dependencies **only if the requirements
+  file changed** (md5), **warns if `torch` was replaced** (a transitive resolve can swap a
+  `+cu128` build for a CPU wheel — that happened here once), re-runs the hardware check,
+  verifies diffusers and `cz_ui` still import, and lists **new config keys** from
+  `config-sample.txt` (`config.txt` is never overwritten). Flags: `--no-pull`,
+  `--force-deps`, `--shared`.
+- All `.bat` written with **CRLF**: `goto` silently fails on LF-only batch files.
+- Files: `boot_check.bat`, `boot_check_lan.bat`, `boot_check_web.bat`,
+  `boot_check_rtx5090.bat` (alias), `update.bat`, `update.sh`, `_hw_check.py`, `README.md`.
+
+## 1.13.1 — 2026-07-27 — Security: upgrade Pillow / protobuf / sentencepiece (21 Dependabot alerts)
+
+Adding `requirements-lock.txt` made Dependabot match **pinned versions** instead of ranges,
+raising 37 alerts. Each was triaged against what the code actually calls.
+
+- **Upgraded**: `pillow 11.3.0 -> 12.3.0`, `protobuf 6.31.0 -> 7.35.1`,
+  `sentencepiece 0.1.96 -> 0.2.2` — **21 alerts closed**, and the advisory database reports
+  **0 remaining** for those three pins.
+- Pillow was the priority: it is the only flagged package that parses **files the user
+  supplies** (Input image, PNG Info), so its 18 advisories (PSD/FITS/JPEG2000 OOB, font and
+  PDF decompression bombs, `RankFilter`, `ImageCmsTransform`, `crop`/`paste` overflow…)
+  were genuinely reachable.
+- **Deliberately not upgraded** (documented per-package in `SECURITY.md`): rembg (server-only
+  flaws, server never started, patched line needs Python 3.11 while this runs 3.10), gradio
+  (`gr.load()`/OAuth/audio unused, Windows traversal needs Python 3.13+; fix needs a 6.x
+  major bump the `<6` pin deliberately excludes), transformers (`Trainer`/LightGlue unused,
+  `trust_remote_code` never set; fix needs 5.x), torch (`jit.script`/`lstm_cell`/
+  `unpack_sequence` never called; fixes have no `+cu128` build, so upgrading would break
+  RTX 5090 support to close unreachable flaws).
+- `torch` was protected during the upgrade (`pip install --no-deps`) — the earlier incident
+  where a transitive resolve replaced `2.8.0+cu128` with a CPU build must not repeat.
+- Verified on the real environment: `torch 2.8.0+cu128` + CUDA still load, `build_ui()`
+  builds, the image chain (save + metadata round-trip + thumbnail + `RankFilter` + `crop` +
+  WebP) works under Pillow 12, and the test suites pass.
+- `SECURITY.md`'s alert section was rewritten: it still claimed the repo had *no lockfile*,
+  which is what changed.
+- Files: `requirements-lock.txt`, `SECURITY.md`.
+
+## 1.13.0 — 2026-07-27 — Asset Browser: per-day index + incremental indexing (Fooocus architecture)
+
+Follow-up to 1.12.2. The metadata cache fixed the *server* side (295 s -> 3,7 s), but the
+browser still downloaded and rendered a **9,42 MB manifest with all 9 278 images** on every
+open. Aligned on the Fooocus design, which was studied for this.
+
+- **`_index/days.json`** — a tiny index (`{date, count}` per day, ~200 bytes for 42 days).
+  The page reads *that* on open, so the sidebar and the current day appear immediately
+  instead of waiting for a multi-megabyte manifest.
+- **One `manifest.json` per day**, written *inside* the day folder (Fooocus convention).
+  The SPA loads only the day being displayed: **9,42 MB -> 1,48 MB** for the largest day
+  (938 images), and typically far less. **5400x less data** for the initial load.
+- **Incremental indexing** — new `on_image_saved()` hook (crispz's `on_image_logged`),
+  called from `save_image()`: thumbnail + day manifest + `days.json` are updated **as the
+  image is written** (~15 ms), so the browser no longer needs a folder rescan to be current.
+  Idempotent (re-saving the same file does not duplicate it) and silent by contract — any
+  failure is logged and *never* breaks a generation.
+- **Global search preserved.** Fooocus only searches within the LoRA/Models tabs; crispz
+  searches all output metadata, so that was kept: typing a query loads the remaining days
+  in the background (cached in memory) and searches across everything.
+- **Backwards compatible**: the global `_index/manifest.json` is still written, and the SPA
+  falls back to it when `days.json` is absent (index not migrated yet).
+- `_entry_for()` is now the single definition of a manifest entry, shared by the full
+  reindex and the incremental hook, so the two paths cannot drift apart.
+- Files: `cz_assetbrowser.py` (`_write_day_manifests`, `on_image_saved`, `_bump_days_index`,
+  `_entry_for`, `_INCR_LOCK`), `cz_imageio.py` (hook in `save_image`), `cz_assets.py`
+  (SPA: `days.json` -> per-day load, search loads all days), `tests/test_ab_index.py`
+  (+5 tests: per-day manifests, incremental add, idempotence, never raises, identical
+  entry shape between both paths).
+
+## 1.12.2 — 2026-07-27 — Asset Browser: metadata cache (reindex 80x faster)
+
+Opening the Asset Browser re-read the PNG metadata of **every** image on every open —
+~25 ms each. Measured on a real 9 278-image library: **295 s per open**, while the SPA
+gives up polling after 180 s (90 x 2 s). The manifest was therefore written *after* the
+page stopped listening: "it doesn't refresh" and "images are missing".
+
+- `ab_reindex` now keeps a **metadata cache** (`_index/meta_cache.json`, rel -> mtime+size
+  signature + parsed meta). Unchanged files are served from it; only new or modified
+  images are re-read.
+- Measured on the same 9 278 images: **295 s -> 3,7 s (80x)**. Well under the polling
+  window, so the gallery fills in as intended.
+- Cache follows deletions (entries for vanished files are dropped, no unbounded growth)
+  and is **defensive**: a corrupt/unreadable cache is ignored and rebuilt, never fatal.
+- Each pass logs what it did: `indexed N image(s) in X.Xs (H from meta cache, R read)`.
+- Files: `cz_assetbrowser.py` (`_load_meta_cache`, `_save_meta_cache`, `_meta_cached`),
+  `tests/test_ab_index.py` (5 tests: cache hit, modified file re-read, fresh metadata
+  reaches the manifest, deletions pruned, corrupt cache non-fatal).
+
+## 1.12.1 — 2026-07-27 — New `lcm` sampler (LCM flow-matching)
+
+- **Sampler** gains **`lcm`** (`FlowMatchLCMScheduler`) next to `euler` and `unipc`:
+  designed for **few steps with guidance ~0-1**, so it suits distilled / Turbo checkpoints.
+  Works with all four schedules (`sgm_uniform` / `beta` / `karras` / `exponential`) — the
+  12 sampler×schedule combinations were verified to build.
+- Falls back to `euler` (with a log line) if the installed diffusers has no
+  `FlowMatchLCMScheduler`.
+- **Why not `dpmpp_sde`** (recommended by some Civitai model cards): the Z-Image pipeline
+  imposes custom `sigmas`, and `DPMSolverSDEScheduler.set_timesteps` does not accept them
+  (it also needs the `torchsde` package). Same reason DPM++ 2M / DPM2a are not exposed.
+  Note that ComfyUI's **`simple` scheduler == our default `sgm_uniform`**, and ComfyUI's
+  **CFG 1.0 == our guidance 0** — so those model cards are already satisfied by the
+  defaults.
+- Files: `cz_pipeline.py` (`SAMPLER_CHOICES`, `_build_scheduler`), `README.md`,
+  `config_modification_tutorial.txt`, `tests/test_xyz.py` (sampler suggestions now derive
+  from `SAMPLER_CHOICES` instead of a hardcoded list).
+
+## 1.12.0 — 2026-07-20 — X/Y/Z grid: compare LoRA files (epochs, versions)
+
+Comparing several trainings of the same LoRA — epochs of one run, or successive CivitAI
+versions — meant editing the Models panel and rebuilding a grid by hand. Two axes now do
+it in one build.
+
+- **`LoRA` axis**: swaps the *file* in LoRA slot 1 and keeps the weight set in the Models
+  panel. Other active slots are left untouched. `None` is a valid value → control cell
+  with no LoRA.
+- **`LoRA + weight` axis**: varies both at once, written `name:weight`
+  (`ollie_e10:0.6, ollie_e20:0.9`), for when the best weight differs per epoch. Split on
+  the *last* `:` so Windows paths survive.
+- **`⤵ suggest` lists the available LoRAs** (same mechanism as Checkpoint): the button
+  drops the full list into the field, ready to prune. For `LoRA + weight` each entry is
+  pre-filled with the current weight, so only the numbers need editing. The inserted list
+  is CSV-quoted, so a filename containing a comma round-trips.
+- Names resolve like every other closed list (`_xyz_match`): any unambiguous fragment
+  works (`e000020`), ambiguous or unknown ones are rejected at **Build** time rather than
+  mid-series.
+- Cell labels show the base name without extension, truncated **from the left** — LoRA
+  being compared usually differ only by their `_e000020` suffix, so trimming the end
+  would have made every column read the same.
+- Available from the CLI too: `--xyz "LoRA=ollie_e10, ollie_e20, None"`.
+- Files: `cz_ui.py` (`_XYZ_AXES` + `lora_name` / `lora_name_weight` in `_xyz_suggestions`
+  / `_xyz_validate_axis` / `_xyz_apply`, new `_xyz_fmt_value` + `_xyz_current_lora_weight`),
+  `cz_cli.py` (`_xyz_cli_apply`, labels), `tests/test_xyz.py` (+6 tests: resolution,
+  ambiguity, weights, apply, left-truncation, suggest round-trip).
+
+## 1.11.4 — 2026-07-20 — Fix: asset-browser thumbnails corrupted files being served
+
+Generating thumbnails while the Asset Browser SPA was displaying them produced
+`h11 LocalProtocolError: Too much data for declared Content-Length` bursts in the console,
+and broken images in the page. `FileResponse` takes `Content-Length` from an `os.stat`,
+then re-reads the file to send it; `im.save(dst)` truncates `dst` to 0 and grows it, so a
+request landing in that window declared one size and sent another. With 8 worker threads
+over hundreds of files, the window was wide open.
+
+- Thumbnails are now written to a temp file then `os.replace()`d (atomic): a reader sees
+  either the previous complete file or the new one, never one mid-write. Same treatment
+  for the other served files rewritten in place — `index.html`, `manifest.json` (both the
+  reindex and the stub) and `<kind>.json`; `ab_open_fast` had the same race by design,
+  since it spawns a background reindex that rewrites the manifest the SPA is polling.
+- Side effect fixed: a truncated thumbnail kept a fresh mtime, so the
+  `getmtime(thumb) >= getmtime(src)` check considered it up to date and it stayed corrupt.
+- `os.replace` retries on Windows `PermissionError` (a destination held open by the
+  serving thread), ~1 s with capped backoff; on definitive failure the thumbnail is
+  counted as failed and regenerated next pass rather than written unsafely.
+- Measured on a 1 writer / 4 reader race: 1725 Content-Length mismatches before, 0 after.
+- Files: `cz_assetbrowser.py` (`_write_atomic_text`, `_replace_retry`, `_ab_make_thumb`).
+
+## 1.11.3 — 2026-07-16 — Fix: LoRA hot-swap left stale adapters ("Already found a peft_config")
+
+Switching LoRA in the UI logged a PEFT warning — *"Already found a `peft_config` attribute
+in the model. This will lead to having multiple adapters."* — because
+`unload_lora_weights()` does not reliably clear the transformer's `peft_config` in this
+diffusers version. Since the hot-swap reuses the same adapter names (`cz_lora_i`), a stale
+adapter could remain and the wrong LoRA be applied.
+
+- `_apply_loras` now clears via a new `_clear_loras(pipe)`: `unload_lora_weights()` **then**
+  an explicit `delete_adapters(get_list_adapters())` to remove any leftover adapter by name
+  — so a swap A→B leaves only B registered, no accumulation.
+- Safe by construction: the extra calls are wrapped in try/except and fall back to the
+  previous behavior on any error.
+- Files: `cz_pipeline.py` (`_clear_loras`), `tests/test_lora_hotswap.py` (+2 tests
+  modelling the adapter lifecycle: a swap leaves only the new adapter; removing all clears
+  the registry).
+
 ## 1.11.2 — 2026-07-16 — Fix: "Image number (batch)" was ignored in img2img / Input image
 
 With **Input image** checked, `_ui_generate` called `run()` exactly once and returned a
@@ -19,6 +266,22 @@ worked in txt2img.
   deterministic and a batch would just write n identical files: the batch is clamped
   to 1 in that case (logged).
 - Files: `cz_ui.py` (`_ui_generate`), `tools/smoke_test.py` (3 checks), `VALIDATION.md`.
+
+## 1.11.1 — 2026-07-15 — Fix: SVDQuant/Nunchaku checkpoints were not filtered out
+
+The README says FP8 / SVDQ (ComfyUI) checkpoints do not load in diffusers, and
+`_safetensors_unsupported` filtered FP8 and `weight_scale`-style INT8/INT4 — but it
+missed **SVDQuant / Nunchaku**, which uses a different convention: no `weight_scale`,
+weights named `*.qweight`. Such a file stayed in the checkpoint dropdown and only failed
+at load time.
+
+- Detection added: any `*.qweight` tensor -> `"SVDQuant/Nunchaku INT4"`, skipped at
+  startup with the reason like FP8. A normal BF16/FP16 checkpoint never has `qweight`,
+  so there is no false positive.
+- Verified on a real file (`…_svdqInt4R32Flux1Dev.safetensors`: 380 `qweight` keys,
+  dtypes I32/BF16/I8, zero `weight_scale` — which is exactly why the old rule missed it)
+  and against 9 other real checkpoints (BF16 -> kept, FP8 -> still caught).
+- Files: `cz_pipeline.py` (`_safetensors_unsupported`).
 
 ## 1.11.0 — 2026-07-15 — "Rebuild ALL thumbnails (force)" button + parallel thumbnail generation
 

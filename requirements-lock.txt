@@ -1,4 +1,4 @@
-# crispz-krea — environnement verrouille, venv ISOLE.
+# crispz-studio — environnement verrouille, venv ISOLE.
 #
 # POURQUOI CE FICHIER
 # requirements.txt donne les bornes ("ce qui doit marcher"). Ce fichier donne
@@ -21,8 +21,9 @@
 # non resoluble par pip (comfy-cli exige click<=8.1.8 face a click 8.4.1).
 # Regenerer plutot en relevant les versions des deps DIRECTES ci-dessous.
 #
-# Liste identique a celle de crispz-qwen-edit: les requirements.txt des deux
-# forks sont les memes, seule la couche modele diverge (Flux vs Qwen).
+# Le commit diffusers epingle ici (2c7efb95) est celui de crispz-studio et
+# DIFFERE de celui des forks krea / qwen-edit (de6b0495). C'est voulu: chaque
+# repo epingle le commit sur lequel il a ete valide.
 
 --extra-index-url https://download.pytorch.org/whl/cu128
 
@@ -40,27 +41,37 @@ accelerate==1.14.0
 safetensors==0.8.0
 huggingface-hub==0.36.2
 peft==0.19.1
-gguf==0.19.0
-sentencepiece==0.1.96
+sentencepiece==0.2.2
 spandrel==0.4.1
+# pas de 'gguf' ici: crispz-studio n'a pas de chemin de chargement GGUF
+# (contrairement aux forks krea / qwen-edit).
 
 # UI / service
 gradio==5.50.0
-fastapi==0.138.1
+fastapi==0.136.3
 uvicorn==0.35.0
 
 # imagerie / utilitaires
-pillow==10.4.0
+# NOTE pillow: la version ci-dessous est la VRAIE version voulue (et celle que
+# Dependabot doit voir), mais install.bat/.sh la FILTRENT de ce fichier au moment
+# du pip install, puis l'installent a part en --no-deps.
+# Raison: les 18 CVE Pillow (dont celles atteignables via les images que
+# l'utilisateur ouvre) ne sont corrigees qu'en 12.x, alors que gradio 5.50 declare
+# pillow<12.0 -> resoudre les deux ensemble donne ResolutionImpossible. La borne de
+# gradio est conservatrice: verifie sur cette base de code (build_ui, sauvegarde +
+# metadonnees, miniatures, RankFilter, crop, WebP), Pillow 12 fonctionne. Le pin
+# gradio <6 reste volontaire (bug Brotli/h11, cf. requirements.txt).
+pillow==12.3.0
 pillow-avif-plugin==1.5.5
 numpy==1.26.4
 scipy==1.14.0
 opencv-python==4.11.0.86
 einops==0.8.0
 omegaconf==2.3.0
-protobuf==6.31.0
-requests==2.32.5
-tqdm==4.66.4
-psutil==6.0.0
+protobuf==7.35.1
+requests==2.34.2
+tqdm==4.68.3
+psutil==7.2.2
 
 # onglets optionnels (Remove BG, Face Swap)
 rembg==2.0.57

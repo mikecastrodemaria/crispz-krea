@@ -168,6 +168,14 @@ def save_image(img, dst_path, output_format, meta=None):
                 json.dump(meta, f, indent=2, ensure_ascii=False)
         except Exception as e:
             _dbg(f"sidecar json failed: {e}")
+    # Indexation incrementale de l'Asset Browser (facon Fooocus): la miniature et le
+    # manifest du jour sont mis a jour ICI, a la sauvegarde -> plus besoin de rescanner
+    # le dossier a l'ouverture. Import tardif: cz_assetbrowser importe cz_imageio.
+    try:
+        import cz_assetbrowser
+        cz_assetbrowser.on_image_saved(dst_path, meta=meta)
+    except Exception as e:
+        _dbg(f"asset-browser incremental index skipped: {e}")
 
 
 def _list_output_files(output_dir, limit=300):
