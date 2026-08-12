@@ -472,6 +472,7 @@ def _safetensors_unsupported(path):
             n = struct.unpack("<Q", f.read(8))[0]
             hdr = json.loads(f.read(min(n, 3_000_000)).decode("utf-8", "ignore"))
         has_fp8 = has_int = has_scale = has_qweight = False
+        lora_keys = 0
         for k, v in hdr.items():
             if k == "__metadata__" or not isinstance(v, dict):
                 continue
@@ -484,6 +485,14 @@ def _safetensors_unsupported(path):
                 has_scale = True
             if k.endswith(".qweight"):
                 has_qweight = True
+            if (".lora_down." in k or ".lora_up." in k or ".lora_A." in k
+                    or ".lora_B." in k or k.startswith(("lora_unet_", "lora_te"))):
+                lora_keys += 1
+        # Fichier LoRA range dans le dossier checkpoints (erreur classique): le charger
+        # comme transformer envoie diffusers chercher une config par defaut (SD1.5) ->
+        # 404 'stable-diffusion-v1-5 does not appear to have a file named config.json'.
+        if lora_keys >= 4:
+            return "LoRA file, not a checkpoint - move it to the LoRA folder and pick it in Models > LoRA"
         if has_fp8:
             return "FP8"
         # '*.qweight' = poids pre-quantifies (SVDQuant/Nunchaku, GPTQ-like). Signal net:
@@ -843,6 +852,12 @@ def _load_transformer():
     from diffusers import FluxTransformer2DModel
     if ZIMAGE_TRANSFORMER:
         if _is_single_file(ZIMAGE_TRANSFORMER):
+            # Garde: un fichier non chargeable (LoRA egaree, FP8, quantifie) doit
+            # echouer avec un message actionnable, pas partir chercher une config
+            # par defaut sur le Hub. (Sans effet sur les .gguf: header illisible -> None.)
+            bad = _safetensors_unsupported(ZIMAGE_TRANSFORMER)
+            if bad:
+                raise RuntimeError(f"{os.path.basename(ZIMAGE_TRANSFORMER)}: {bad}.")
             if _is_gguf_path(ZIMAGE_TRANSFORMER):
                 # transformer Flux GGUF (quantifie) -> tient en VRAM, rapide. Le VAE +
                 # encodeurs CLIP/T5 viennent quand meme du repo de base (gated pour Krea).
