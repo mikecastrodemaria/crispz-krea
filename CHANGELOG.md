@@ -3,6 +3,32 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — FP8/INT8 "scaled" FLUX checkpoints loadable + GGUF layout guard
+
+**Why.** Ported from crispz-studio: many FLUX.1 builds ship as ComfyUI **FP8 "scaled"**
+safetensors (e.g. `flux1-krea-dev_fp8_scaled`, 11 GB vs 22 GB bf16) and were skipped
+from the model list. GGUF was already supported here but lacked the tensor-layout guard.
+
+**What.**
+- ComfyUI-quantized safetensors (`X.weight` F8/I8 + `X.scale_weight`/`X.weight_scale`
+  scalar-or-per-row; `X.scale_input` activation scales and the `scaled_fp8` marker are
+  dropped) are **dequantized in RAM to BF16** at load, then fed to `from_single_file` as
+  a state dict. AIO bundles filtered to `model.diffusion_model.*` (base VAE/CLIP/T5
+  reused). Tensors read in file-offset order (HDD-friendly).
+- **Architecture guards**: misfiled LoRAs and SVDQuant/Nunchaku still refused; non-FLUX
+  quantized checkpoints refused by key markers; and since **FLUX.2 Klein reuses the same
+  key names**, the double-block count is checked from the header (FLUX.1 = 19, Klein =
+  5) — a Klein/pruned file is refused in milliseconds instead of dequantizing for 3 min
+  and failing on shapes.
+- **GGUF layout guard** (was missing here): sd.cpp-style compact tensor renames are
+  refused with a clear message at listing and load, like the other forks.
+
+Validated on real files: `flux1-krea-dev_fp8_scaled` (11 GB) loads to **11.90 B bf16
+params, zero meta tensors**; `flux1DevFp811GBR1` detected FP8; svdq-int4 still rejected;
+`flux-2-klein-4b-fp8` rejected at the header; both local GGUFs (Q4_K_M Krea, Q8_0 dev)
+pass arch+layout. Unit tests: `tests/test_quant_formats.py` (8 cases, incl. the Klein
+guard); `test_thumbs` made hermetic to the machine cache prefs.
+
 ## Unreleased — Fix: a LoRA picked as checkpoint no longer hunts for an SD1.5 config
 
 **Why.** A LoRA file misfiled in a checkpoints folder (e.g. `ZITnsfwLoRAv3.safetensors`)

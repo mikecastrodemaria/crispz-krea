@@ -457,32 +457,30 @@ def set_zimage_transformer(path):
              "-> transformer swap on next run (base components kept)")
 
 
+def _safetensors_header(path):
+    """En-tete JSON d'un .safetensors (noms/dtypes/shapes des tenseurs, JAMAIS les
+    poids) -- lecture de quelques centaines de Ko au plus, meme sur un fichier de 22 Go."""
+    import struct
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        return json.loads(f.read(min(n, 10_000_000)).decode("utf-8", "ignore"))
+
+
 def _safetensors_unsupported(path):
-    """Renvoie une raison (str) si le .safetensors n'est PAS chargeable par diffusers,
-    sinon None. Lit juste l'en-tete (rapide). Deux cas non supportes:
-      - FP8 (F8_E4M3 / F8_E5M2) -> "FP8"
-      - quantifie INT8/INT4 facon ComfyUI / SVDQuant-Nunchaku (tenseurs I8/U8 + facteurs
-        'weight_scale') -> "INT8/INT4 quantized". diffusers ne dequantifie pas ce schema.
-      - SVDQuant / Nunchaku (tenseurs nommes '*.qweight') -> "SVDQuant/Nunchaku INT4".
-        Ce schema n'utilise PAS 'weight_scale', d'ou une detection dediee.
-    Prendre le build BF16/FP16 non quantifie, ou un .gguf."""
+    """Renvoie une raison (str) si le .safetensors n'est PAS chargeable, sinon None.
+    Lit juste l'en-tete (rapide). Deux cas restent non supportes:
+      - fichier LoRA range dans le dossier checkpoints (cles kohya/peft)
+      - SVDQuant / Nunchaku (tenseurs nommes '*.qweight'): poids pre-quantifies INT4
+        qui exigent le runtime nunchaku (kernels dedies), pas dequantifiables ici.
+    Les FP8 / INT8 'scaled' facon ComfyUI ne sont PLUS rejetes: ils passent par le
+    loader dequant (_safetensors_dequant + _load_dequant_state_dict)."""
     try:
-        import struct
-        with open(path, "rb") as f:
-            n = struct.unpack("<Q", f.read(8))[0]
-            hdr = json.loads(f.read(min(n, 3_000_000)).decode("utf-8", "ignore"))
-        has_fp8 = has_int = has_scale = has_qweight = False
+        hdr = _safetensors_header(path)
+        has_qweight = False
         lora_keys = 0
         for k, v in hdr.items():
             if k == "__metadata__" or not isinstance(v, dict):
                 continue
-            dt = str(v.get("dtype", "")).upper()
-            if dt.startswith("F8"):
-                has_fp8 = True
-            elif dt in ("I8", "I4", "U8", "U4", "UINT8", "INT8"):
-                has_int = True
-            if k.endswith("weight_scale") or k.endswith("scale_weight"):
-                has_scale = True
             if k.endswith(".qweight"):
                 has_qweight = True
             if (".lora_down." in k or ".lora_up." in k or ".lora_A." in k
@@ -493,24 +491,130 @@ def _safetensors_unsupported(path):
         # 404 'stable-diffusion-v1-5 does not appear to have a file named config.json'.
         if lora_keys >= 4:
             return "LoRA file, not a checkpoint - move it to the LoRA folder and pick it in Models > LoRA"
-        if has_fp8:
-            return "FP8"
         # '*.qweight' = poids pre-quantifies (SVDQuant/Nunchaku, GPTQ-like). Signal net:
         # un checkpoint BF16/FP16 normal n'a jamais de 'qweight'.
         if has_qweight:
             return "SVDQuant/Nunchaku INT4"
-        # Les dtypes entiers bas seuls ne suffisent pas (evite les faux positifs sur un
-        # buffer U8 isole): on exige les facteurs de dequantification 'weight_scale'.
-        if has_int and has_scale:
-            return "INT8/INT4 quantized"
     except Exception:
         pass
     return None
 
 
-def _safetensors_is_fp8(path):
-    """Compat: ancien predicat FP8 seul. Prefere _safetensors_unsupported()."""
-    return _safetensors_unsupported(path) == "FP8"
+def _safetensors_dequant(path):
+    """Renvoie le schema de quantification ComfyUI a dequantifier au chargement
+    ('FP8', 'FP8 scaled' ou 'INT8 scaled'), sinon None (BF16/FP16 -> chemin normal).
+    Format 'scaled' ComfyUI observe (ex. flux1-krea-dev_fp8_scaled):
+      X.weight (F8_E4M3 ou I8) + X.scale_weight / X.weight_scale (F32, scalaire ou par
+      ligne) + X.scale_input (echelle d'activation, jetee) + marqueur 'scaled_fp8'.
+    NB: un bundle AIO dont SEUL l'encodeur texte est quantifie (transformer BF16)
+    declenche aussi -> le loader dequant filtre le transformer et le laisse intact.
+    U8 seul ne declenche pas: les blobs 'comfy_quant' sont U8 dans des fichiers sains."""
+    try:
+        hdr = _safetensors_header(path)
+        has_fp8 = has_int = has_scale = False
+        for k, v in hdr.items():
+            if k == "__metadata__" or not isinstance(v, dict):
+                continue
+            dt = str(v.get("dtype", "")).upper()
+            if dt.startswith("F8"):
+                has_fp8 = True
+            elif dt in ("I8", "I4", "U4", "INT8"):
+                has_int = True
+            if k.endswith(("weight_scale", "scale_weight")):
+                has_scale = True
+        if has_fp8:
+            return "FP8 scaled" if has_scale else "FP8"
+        if has_int and has_scale:
+            return "INT8 scaled"
+    except Exception:
+        pass
+    return None
+
+
+# Marqueurs de cles du transformer FLUX.1 (layout original OU prefixe ComfyUI):
+# utilises par le loader dequant pour refuser un checkpoint quantifie d'une AUTRE
+# architecture (FLUX.2 Klein, SDXL... chargeraient des poids incoherents).
+_FLUX_KEY_MARKERS = ("double_blocks.", "single_blocks.", "transformer_blocks.")
+
+
+def _load_dequant_state_dict(path):
+    """Charge en RAM un checkpoint 'scaled' ComfyUI (FP8/INT8) et le dequantifie en
+    DTYPE (bf16), tenseur par tenseur:
+      - bundle AIO (transformer + encodeur texte + VAE): seules les cles
+        'model.diffusion_model.*' sont gardees (VAE + encodeurs = repo de base);
+      - X.weight (F8/I8) * X.scale_weight (scalaire ou par ligne) -> bf16;
+      - les cles de quantification (scale_weight/weight_scale, scale_input,
+        comfy_quant, marqueur scaled_fp8) sont consommees/jetees.
+    Le dict resultant part dans from_single_file (conversion de cles diffusers comprise).
+    NB VRAM/RAM: dequantifie = empreinte d'un BF16 complet (~22 Go pour FLUX.1); le FP8
+    n'economise que le disque/telechargement, pas la memoire."""
+    from safetensors import safe_open
+    t0 = time.time()
+    hdr = _safetensors_header(path)
+    entries = [(k, v) for k, v in hdr.items()
+               if k != "__metadata__" and isinstance(v, dict)]
+    # Bundle AIO: ne garder que le transformer. (Sans prefixe ComfyUI = fichier
+    # transformer-only au layout original -> pas de filtre.)
+    if any(k.startswith("model.diffusion_model.") for k, _ in entries):
+        entries = [(k, v) for k, v in entries
+                   if k.startswith("model.diffusion_model.")]
+    # Garde d'architecture: un checkpoint quantifie d'un AUTRE modele (cles sans
+    # aucun marqueur FLUX.1) chargerait des poids incoherents -> refus clair.
+    if not any(any(m in k for m in _FLUX_KEY_MARKERS) for k, _ in entries):
+        raise RuntimeError(
+            f"{os.path.basename(path)}: quantized checkpoint does not look like a "
+            "FLUX.1 transformer (different architecture); this build only loads "
+            "FLUX.1 models.")
+    # FLUX.2 Klein (et variantes reduites/pruned) reutilisent les MEMES noms de cles
+    # (double_blocks/img_attn): on verifie aussi le NOMBRE de double_blocks (FLUX.1 = 19)
+    # depuis l'en-tete -- sinon on dequantifierait des Go pour echouer ensuite sur un
+    # mismatch de shapes (mesure: 3 min perdues sur flux-2-klein-4b-fp8, 5 blocks).
+    import re
+    dbl = {int(m.group(1)) for k, _ in entries
+           for m in [re.match(r"(?:model\.diffusion_model\.)?double_blocks\.(\d+)\.", k)]
+           if m}
+    if dbl and len(dbl) != 19:
+        raise RuntimeError(
+            f"{os.path.basename(path)}: quantized checkpoint has {len(dbl)} double "
+            "blocks (FLUX.1 has 19) - looks like a FLUX.2 Klein / pruned variant, "
+            "which this build cannot load.")
+    # Lecture SEQUENTIELLE dans l'ordre PHYSIQUE du fichier (data_offsets): un HDD
+    # s'effondre en acces aleatoire, et l'ordre des cles ne suit pas celui des donnees.
+    entries.sort(key=lambda kv: kv[1].get("data_offsets", [0])[0])
+    raw = {}
+    with safe_open(path, framework="pt", device="cpu") as f:
+        for k, _ in entries:
+            if k.endswith(".comfy_quant"):   # blob descripteur, jamais utilise
+                continue
+            raw[k] = f.get_tensor(k)
+    sd = {}
+    n_dq = 0
+    for k in list(raw.keys()):
+        if (k.endswith((".weight_scale", ".scale_weight", ".scale_input", ".input_scale"))
+                or k.endswith("scaled_fp8")):
+            continue                         # consommees via lookup / jetees
+        t = raw.pop(k)
+        if t.dtype in (torch.float8_e4m3fn, torch.float8_e5m2,
+                       torch.int8, torch.uint8):
+            s = None
+            for cand in (k + "_scale",       # X.weight -> X.weight_scale (ComfyUI)
+                         (k[:-len(".weight")] + ".scale_weight")
+                         if k.endswith(".weight") else None):
+                if cand and cand in raw:
+                    s = raw[cand]
+                    break
+            t = t.to(torch.float32)
+            if s is not None:                # scalaire ou [out,1] -> broadcast
+                t = t * s.to(torch.float32)
+            t = t.to(DTYPE)
+            n_dq += 1
+        elif t.is_floating_point() and t.dtype != DTYPE:
+            t = t.to(DTYPE)
+        sd[k] = t
+    raw.clear()
+    _log(f"dequantized {n_dq} tensors ({len(sd)} kept) to bf16 in "
+         f"{time.time() - t0:.1f}s")
+    return sd
 
 
 # Architecture attendue dans les .gguf. Un GGUF de diffusion declare son archi dans
@@ -567,6 +671,36 @@ def _gguf_arch(path, max_kv=64):
     return None
 
 
+# Prefixes de tenseurs du layout FLUX.1 ORIGINAL (celui que le loader GGUF de diffusers
+# sait mapper -- conversions ComfyUI-GGUF/city96, avec ou sans prefixe ComfyUI).
+# Certains GGUF sont convertis par stable-diffusion.cpp avec un schema compact renomme:
+# l'archi declaree est bonne mais AUCUNE cle ne matche -> tous les poids restent sur le
+# device 'meta' et le .to(device) explose en "Cannot copy out of meta tensor".
+# On detecte ce cas a l'en-tete pour refuser proprement.
+_GGUF_OK_PREFIXES = ("double_blocks.", "single_blocks.", "img_in", "txt_in",
+                     "time_in", "vector_in", "guidance_in", "final_layer",
+                     "model.diffusion_model.")
+
+
+def _gguf_layout_unsupported(path):
+    """Renvoie une raison (str) si le .gguf n'utilise PAS le layout de tenseurs FLUX
+    original attendu par diffusers, sinon None. Lecture d'en-tete seule (gguf mmap)."""
+    try:
+        from gguf import GGUFReader
+        r = GGUFReader(path)
+        names = [t.name for t in r.tensors]
+        if not names:
+            return None                      # illisible -> ne pas ecarter a tort
+        if any(n.startswith(_GGUF_OK_PREFIXES) for n in names):
+            return None
+        return ("GGUF with a non-standard tensor layout (e.g. stable-diffusion.cpp "
+                "conversion); diffusers cannot map it — use a ComfyUI-GGUF/city96-style "
+                "export or the BF16/FP16 .safetensors build")
+    except Exception as e:
+        _dbg(f"gguf layout check failed {path}: {e}")
+        return None
+
+
 def _checkpoint_dirs():
     """Dossiers a scanner pour les checkpoints single-file: principal + extra (si defini),
     sans doublon de chemin."""
@@ -594,8 +728,7 @@ def list_checkpoints():
             if f.lower().endswith(".safetensors"):
                 reason = _safetensors_unsupported(os.path.join(d, f))
                 if reason:
-                    _log(f"checkpoint skipped ({reason} .safetensors, not loadable by "
-                         f"diffusers; use the BF16/FP16 build or a .gguf): {f}")
+                    _log(f"checkpoint skipped ({reason}): {f}")
                     continue
             if f.lower().endswith(".gguf"):
                 a = _gguf_arch(os.path.join(d, f))
@@ -604,6 +737,10 @@ def list_checkpoints():
                     _log(f"checkpoint skipped (GGUF architecture '{a}', this build only "
                          f"loads '{GGUF_ARCH}'; that model needs its own pipeline and "
                          f"text encoder/VAE): {f}")
+                    continue
+                lay = _gguf_layout_unsupported(os.path.join(d, f))
+                if lay:
+                    _log(f"checkpoint skipped ({lay}): {f}")
                     continue
             seen.add(f)
             out.append(f)
@@ -865,12 +1002,29 @@ def _load_transformer():
                 _log(f"loading Flux transformer (GGUF, quantized): {ZIMAGE_TRANSFORMER} ...")
                 # config/subfolder = archi du transformer depuis le repo de base (cache),
                 # sinon from_single_file ne sait pas la structure et tente un repo par defaut.
+                lay = _gguf_layout_unsupported(ZIMAGE_TRANSFORMER)
+                if lay:
+                    raise RuntimeError(
+                        f"{os.path.basename(ZIMAGE_TRANSFORMER)}: {lay}.")
                 return _load_monitor(
                     f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)} (GGUF)",
                     lambda: FluxTransformer2DModel.from_single_file(
                         ZIMAGE_TRANSFORMER,
                         quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
                         config=BASE_REPO, subfolder="transformer",
+                        torch_dtype=DTYPE))
+            dq = _safetensors_dequant(ZIMAGE_TRANSFORMER)
+            if dq:
+                # FP8/INT8 'scaled' ComfyUI (ex. flux1-krea-dev_fp8_scaled, builds
+                # Civitai legers) -> dequant en RAM puis chargement du dict
+                # (conversion de cles diffusers incluse).
+                _log(f"loading Flux transformer (single-file, {dq} ComfyUI -> "
+                     f"dequantized to bf16): {ZIMAGE_TRANSFORMER} ...")
+                sd = _load_dequant_state_dict(ZIMAGE_TRANSFORMER)
+                return _load_monitor(
+                    f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)} ({dq})",
+                    lambda: FluxTransformer2DModel.from_single_file(
+                        sd, config=BASE_REPO, subfolder="transformer",
                         torch_dtype=DTYPE))
             # checkpoint Flux single-file (.safetensors bf16/fp16) -> override transformer
             # (VAE + encodeurs CLIP/T5 restent tires du repo de base).
