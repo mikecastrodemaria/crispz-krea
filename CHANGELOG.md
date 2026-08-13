@@ -3,6 +3,17 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — Force aspect ratio: new "Extend (outpaint)" mode next to crop
+
+Ported from crispz-studio: the Upscale/img2img "Force aspect ratio" checkbox becomes a
+radio — **Off / Crop to fit / Extend (outpaint)**. Extend reaches the target ratio by
+outpainting the missing bands (symmetric, `outpaint_directions`: full-res centre kept,
+~1 MP diffusion recomposed) instead of cropping, then a light **seam-blend pass**
+(img2img denoise `force_ratio_extend_denoise`, default 0.22, 0 = off) is composited
+back **only over the bands + a feathered ~5% transition margin** — the original centre
+stays pixel-for-pixel untouched. Config: `force_ratio_mode` (`crop`/`extend`), env
+`CZ_FORCE_RATIO_MODE`. Unit tests: `tests/test_force_ratio.py`.
+
 ## Unreleased — FP8/INT8 "scaled" FLUX checkpoints loadable + GGUF layout guard
 
 **Why.** Ported from crispz-studio: many FLUX.1 builds ship as ComfyUI **FP8 "scaled"**
