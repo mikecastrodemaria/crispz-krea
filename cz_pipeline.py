@@ -133,6 +133,18 @@ TRUE_CFG = float(CONFIG.get("flux_true_cfg", 4.0))
 # (defaut). Format: 'W:H' ou 'WxH' (ex. '13:19', '832x1216'). Pilotable par l'UI (case a
 # cocher + dropdown Aspect ratio) via set_force_ratio, ou par config.txt 'force_upscale_ratio'.
 FORCE_RATIO = (os.environ.get("CZ_FORCE_RATIO") or CONFIG.get("force_upscale_ratio") or "").strip()
+# Comment atteindre le ratio force: 'crop' = recadrage centre (perd les bords, defaut),
+# 'extend' = etend l'image au ratio par outpaint (ne perd rien, ajoute des bandes
+# generees). UI (radio) via set_force_ratio_mode, config 'force_ratio_mode'.
+FORCE_RATIO_MODE = (os.environ.get("CZ_FORCE_RATIO_MODE")
+                    or CONFIG.get("force_ratio_mode") or "crop").strip().lower()
+# Passe de fusion des raccords du mode extend: apres l'outpaint des bandes, une passe
+# img2img LEGERE tourne sur l'image etendue et SEULES les bandes + une marge de
+# transition feather sont recollees depuis elle (centre original intact). 0 = desactive.
+try:
+    EXTEND_DENOISE = float(CONFIG.get("force_ratio_extend_denoise", 0.22) or 0.0)
+except Exception:
+    EXTEND_DENOISE = 0.22
 
 # Sampler / scheduler. Le pipeline Z-Image impose un schedule `sigmas` custom: seuls
 # les schedulers dont set_timesteps accepte `sigmas` fonctionnent. En pratique -> Euler
@@ -1388,10 +1400,17 @@ def round_to_multiple(x, m=16):
 
 def set_force_ratio(spec):
     """Definit le ratio force pour upscale/img2img: 'W:H' / 'WxH' (ex '13:19', '832x1216')
-    ou '' pour desactiver (ratio natif preserve). Pilote par la case a cocher UI."""
+    ou '' pour desactiver (ratio natif preserve). Pilote par le radio UI."""
     global FORCE_RATIO
     FORCE_RATIO = (spec or "").strip()
     _log(f"force ratio -> {FORCE_RATIO or '(off, ratio natif preserve)'}")
+
+
+def set_force_ratio_mode(mode):
+    """'crop' (recadrage centre) ou 'extend' (outpaint des bandes manquantes)."""
+    global FORCE_RATIO_MODE
+    FORCE_RATIO_MODE = "extend" if str(mode or "").strip().lower() == "extend" else "crop"
+    _log(f"force ratio mode -> {FORCE_RATIO_MODE}")
 
 
 def _parse_ratio(spec):
@@ -1421,6 +1440,50 @@ def _crop_to_ratio(image, ratio_w, ratio_h):
     nh = max(1, int(round(w / target)))    # trop haut -> couper haut/bas
     y0 = (h - nh) // 2
     return image.crop((0, y0, w, y0 + nh))
+
+
+def _extend_to_ratio(image, ratio_w, ratio_h, prompt, steps, seed):
+    """Amene l'image au ratio cible en l'ETENDANT (outpaint) au lieu de recadrer:
+    bandes symetriques ajoutees sur l'axe manquant et remplies par le modele via
+    outpaint_directions -- le centre garde sa pleine resolution (seules les bandes
+    sont generees, diffusion bornee a ~1 MP puis recomposition).
+
+    Anti 'effet bande': une passe img2img legere (EXTEND_DENOISE) tourne sur l'image
+    etendue, mais SEULES les bandes + une marge de transition feather sont recollees
+    depuis cette passe -- le centre original reste PIXEL POUR PIXEL intact (la passe
+    harmonise l'exposition/texture aux jointures sans jamais retoucher l'image)."""
+    from PIL import ImageDraw, ImageFilter
+    image = image.convert("RGB")
+    w, h = image.size
+    target = float(ratio_w) / float(ratio_h)
+    cur = w / h
+    if abs(cur - target) < 1e-3:
+        return image
+    if cur < target:                       # trop etroit -> elargir gauche + droite
+        pad = target * h - w
+        out = outpaint_directions(image, None, ["left", "right"], prompt, steps, seed,
+                                  expand=pad / (2.0 * w))
+    else:                                  # trop large -> etendre haut + bas
+        pad = w / target - h
+        out = outpaint_directions(image, None, ["top", "bottom"], prompt, steps, seed,
+                                  expand=pad / (2.0 * h))
+    if EXTEND_DENOISE > 0.001:
+        _log(f"extend: seam-blend pass (img2img denoise {EXTEND_DENOISE:.2f}, "
+             "original centre kept)")
+        refined = _refine_whole(get_pipe("img2img"), out, EXTEND_DENOISE,
+                                steps, prompt, seed)
+        # Masque de recollage: blanc = prendre la passe harmonisee (bandes + marge de
+        # transition A CHEVAL sur la jointure), noir = garder l'original. La marge
+        # penetre dans l'image d'origine puis est feather -> raccord fondu, centre intact.
+        ox, oy = (out.width - w) // 2, (out.height - h) // 2
+        m = max(24, int(0.05 * min(out.size)))       # transition ~5% du petit cote
+        mx, my = (m if ox > 0 else 0), (m if oy > 0 else 0)   # marge cote jointure SEULEMENT
+        mask = Image.new("L", out.size, 255)
+        ImageDraw.Draw(mask).rectangle(
+            [ox + mx, oy + my, ox + w - mx, oy + h - my], fill=0)
+        mask = mask.filter(ImageFilter.GaussianBlur(max(8, m // 3)))
+        out = Image.composite(refined, out, mask)
+    return out
 
 
 def _reframe_canvas(image, ratio_w, ratio_h, overlap=8):
@@ -1755,16 +1818,24 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
     do_esrgan=False -> img2img pur (saute l'etage ESRGAN, refine sur l'image native).
     refine_first=True -> refine PUIS ESRGAN (la diffusion tourne a la resolution
     native = bien plus rapide), au lieu de ESRGAN PUIS refine (detail en haute-def).
-    apply_force_ratio=True + FORCE_RATIO defini -> recadre l'ENTREE au ratio choisi
-    (crop to fit, facon Fooocus) avant traitement. Sinon: ratio natif preserve."""
+    apply_force_ratio=True + FORCE_RATIO defini -> amene l'ENTREE au ratio choisi avant
+    traitement: FORCE_RATIO_MODE 'crop' = recadrage centre (facon Fooocus), 'extend' =
+    outpaint des bandes manquantes (rien n'est perdu). Sinon: ratio natif preserve."""
     timings = {"esrgan": 0.0, "refine": 0.0}
     image = image.convert("RGB")
     if apply_force_ratio and FORCE_RATIO:
         r = _parse_ratio(FORCE_RATIO)
         if r:
             _before = image.size
-            image = _crop_to_ratio(image, r[0], r[1])
-            _log(f"force ratio {r[0]}:{r[1]} -> crop {_before[0]}x{_before[1]} "
+            if FORCE_RATIO_MODE == "extend":
+                # max(6, steps): l'outpaint des bandes reste correct meme si l'upscale
+                # tourne en pur ESRGAN (steps/denoise a ~0).
+                image = _extend_to_ratio(image, r[0], r[1], prompt, max(6, int(steps)), seed)
+                _verb = "extend (outpaint)"
+            else:
+                image = _crop_to_ratio(image, r[0], r[1])
+                _verb = "crop"
+            _log(f"force ratio {r[0]}:{r[1]} -> {_verb} {_before[0]}x{_before[1]} "
                  f"to {image.size[0]}x{image.size[1]}")
     w0, h0 = image.size
     use_esrgan = bool(do_esrgan and esrgan_model)

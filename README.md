@@ -46,15 +46,24 @@ SwarmUI. On top of crispz's upscaler it adds:
   (Turbo / Z-Image) with single-file `.safetensors` from a main **and** an optional
   extra folder, a **Transformer override** (diffusers repo/folder, e.g. Juggernaut-Z),
   and **multi-LoRA** (configurable **1–10 slots** + trigger words). Picking a model also
-  auto-syncs the Performance preset. FP8 and INT8/INT4-quantized checkpoints are skipped
-  (diffusers can't load them) - use the BF16/FP16 build.
+  auto-syncs the Performance preset. Supported formats: BF16/FP16, **GGUF quants**
+  (city96/ComfyUI-GGUF exports, stay quantized in VRAM) and ComfyUI **FP8 / FP8-scaled /
+  INT8-scaled** builds like `flux1-krea-dev_fp8_scaled` (dequantized to bf16 at load —
+  bf16 memory footprint, the saving is disk/download only). Still skipped with a clear
+  console message: misfiled LoRAs, SVDQuant/Nunchaku INT4, **FLUX.2 Klein / pruned
+  variants** (same key names but 5 double blocks vs 19 — detected at the header),
+  foreign-architecture or sd.cpp-layout GGUFs.
+- **Force aspect ratio on Upscale/img2img** (Settings > Aspect ratio): 3-way radio —
+  **Off** / **Crop to fit** (centre-crop, Fooocus-style) / **Extend (outpaint)**
+  (the missing bands are generated instead, centre kept pixel-for-pixel, seams blended
+  by a light pass; config `force_ratio_mode`, `force_ratio_extend_denoise`).
 - **Presets (Fooocus-style)** (Settings > ⭐ Presets): **save / load / update / delete**
   presets — a preset bundles prompt, styles, size, steps/CFG, sampler, checkpoint,
   transformer + LoRAs, and **Load** switches the model/LoRAs too. Stored in `presets/*.json`.
   A **basic preset is auto-created for every loadable model** (on startup and when you
   Refresh the checkpoint list) if it doesn't already exist yet — named after the model,
   with steps/CFG from its profile. Existing presets are never overwritten; skipped
-  FP8/INT8-INT4 models get none.
+  models (LoRA/SVDQuant files, Klein variants, foreign GGUFs) get none.
 - **Seed**: **♻️ Reuse last seed** (refills the real seed of the previous render) + **Fix
   seed** (no +1 per image). A random `-1` seed is resolved to a concrete value so it is
   actually saved in the metadata.
@@ -399,8 +408,10 @@ python app.py --zimage-transformer "D:/models/zimage_civitai.safetensors" ...
 ```
 
 The single-file is loaded as the **transformer**; the **VAE + Qwen3 text encoder**
-still come from the base repo (`Tongyi-MAI/Z-Image-Turbo` by default). Use a
-**BF16/FP16** checkpoint - FP8/GGUF ComfyUI variants do not load cleanly in diffusers.
+still come from the base repo. **BF16/FP16, GGUF (kept quantized in VRAM) and ComfyUI
+FP8/INT8 "scaled" builds (dequantized to bf16 at load) are all supported**; only
+misfiled LoRAs, SVDQuant/Nunchaku INT4, FLUX.2 Klein/pruned variants and
+foreign-architecture files are refused.
 
 ### Turbo vs Base (`--guidance`)
 
@@ -496,9 +507,11 @@ Juggernaut-Z is a **Z-Image Base** fine-tune → set **Performance = "Base CFG"*
 
 **Gotchas**
 
-- Checkpoints must be **BF16/FP16**. FP8 / INT8-INT4 / GGUF / SVDQ (ComfyUI) variants
-  do **not** load in diffusers and are **auto-hidden** from the checkpoint list (a line
-  is logged: `checkpoint skipped (FP8 | INT8/INT4 quantized, ...)`). Pick the BF16 build.
+- **BF16/FP16, GGUF and ComfyUI FP8/INT8 "scaled" checkpoints all load** (GGUF stays
+  quantized in VRAM; FP8/INT8 are dequantized to bf16 in RAM — a 12B FLUX FP8 needs
+  ~22 GB). Only misfiled **LoRAs**, **SVDQuant/Nunchaku INT4**, **FLUX.2 Klein/pruned
+  variants** and foreign-architecture files are auto-hidden from the list (a
+  `checkpoint skipped (...)` line is logged).
 - If the checkpoint is a **Z-Image Base** model (not Turbo), set **Performance →
   "Base CFG (28 steps)"** (guidance ~4, more steps), otherwise the result is flat.
 - Verify what loaded with `run.bat --debug`:
