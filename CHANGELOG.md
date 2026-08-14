@@ -3,6 +3,15 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — CLI parity: expand / inpaint-mask / reframe-fit / force-ratio flags
+
+Ported from crispz-studio: **`--expand left,right,top,bottom`** (+ `--expand-ratio`) =
+the "Expand sides" directional outpaint; **`--inpaint-mask mask.png`**
+(+ `--inpaint-denoise`) = mask-file inpaint; **`--reframe-fit contain|cover`**;
+**`--force-ratio W:H`** + **`--force-ratio-mode crop|extend`** (the `-o` single-file
+path now honours the forced ratio like the standard path). Documented in README_CLI.md;
+`--reframe … --reframe-fit cover` smoke-tested (1376×768, no fill).
+
 ## Unreleased — Force aspect ratio: new "Extend (outpaint)" mode next to crop
 
 Ported from crispz-studio: the Upscale/img2img "Force aspect ratio" checkbox becomes a
