@@ -74,6 +74,29 @@ def test_int8_per_row_scale():
     assert torch.allclose(sd[_W].float(), want.float())
 
 
+def test_int8_convrot_roundtrip():
+    # Format int8_tensorwise + ConvRot de comfy-quants: les poids sont TOURNES
+    # (Hadamard base H4 par groupes de 256) avant quantification -> le loader doit
+    # defaire la rotation, sinon bruit total (observe en vrai sur redzit/studio).
+    torch.manual_seed(0)
+    W = torch.randn(8, 512)                      # in=512 -> 2 groupes de 256
+    H = cz_pipeline._hadamard_ortho(256)
+    wr = (W.view(8, 2, 256) @ H.T).reshape(8, 512)
+    scale = (wr.abs().amax(dim=-1, keepdim=True) / 127).clamp(min=1e-30)
+    q = (wr / scale).round().clamp(-128, 127).to(torch.int8)
+    blob = torch.tensor(
+        list(b'{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":256}'),
+        dtype=torch.uint8)
+    p = _st("convrot.safetensors", {
+        _W: q, _W + "_scale": scale.float(),
+        _W.replace(".weight", ".comfy_quant"): blob,
+        **_pad19(),
+    })
+    sd = cz_pipeline._load_dequant_state_dict(p)
+    err = float((sd[_W].float() - W).abs().max() / W.abs().max())
+    assert err < 0.02, f"convrot roundtrip error too high: {err}"
+
+
 def test_aio_bundle_filtered():
     p = _st("aio.safetensors", {
         "model.diffusion_model." + _W: torch.randn(4, 4, dtype=torch.bfloat16),
@@ -146,9 +169,10 @@ def test_gguf_arch_and_layout():
 
 if __name__ == "__main__":
     for fn in (test_bf16_passthrough, test_fp8_scaled_dequant_math,
-               test_int8_per_row_scale, test_aio_bundle_filtered,
-               test_klein_pruned_rejected, test_foreign_arch_rejected,
-               test_lora_and_svdq_still_unsupported, test_gguf_arch_and_layout):
+               test_int8_per_row_scale, test_int8_convrot_roundtrip,
+               test_aio_bundle_filtered, test_klein_pruned_rejected,
+               test_foreign_arch_rejected, test_lora_and_svdq_still_unsupported,
+               test_gguf_arch_and_layout):
         fn()
         print(f"OK {fn.__name__}")
     print("All quant-format tests passed.")

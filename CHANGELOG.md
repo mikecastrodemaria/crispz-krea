@@ -3,6 +3,13 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — Fix: ConvRot INT8 checkpoints rendered pure noise
+
+Ported from crispz-studio: the dequant loader now parses the `comfy_quant` JSON blobs
+and un-rotates ConvRot weights (grouped Hadamard, comfy-quants' specific H4-Kronecker
+matrix — NOT Sylvester) after descaling. Without it, `int8_tensorwise` + `convrot`
+checkpoints load structurally but render pure noise. Roundtrip unit test added.
+
 ## Unreleased — CLI parity: expand / inpaint-mask / reframe-fit / force-ratio flags
 
 Ported from crispz-studio: **`--expand left,right,top,bottom`** (+ `--expand-ratio`) =
