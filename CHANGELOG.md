@@ -3,6 +3,16 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — queue: persistence + soft ⏸ Pause (ported from crispz-studio)
+
+The job queue now SURVIVES a restart or crash: saved to cache/queue.json after
+every mutation (add/move/remove/clear) AND after every job, restored at startup
+(the accordion shows the restored count; job_queue.persist=false to disable).
+Images in job snapshots are written under cache/queue_assets/. Two loss-free
+ways to halt a run: the new ⏸ Pause button finishes the current job then
+suspends; Stop interrupts mid-render and the interrupted job now STAYS queued
+(it was discarded before) - it re-runs entirely on resume.
+
 ## Unreleased — AI provenance: C2PA reading + TrustMark invisible watermark (EU AI Act art. 50)
 
 New optional brick `cz_provenance.py` (CPU only, the GPU is never touched), for
