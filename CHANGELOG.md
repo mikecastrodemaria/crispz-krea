@@ -3,6 +3,26 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — face & hand detailers brought up to crispz-studio level
+
+The family carried a PRE-FIX copy of the face detailer and no hand detailer at
+all. Ported from crispz-studio, current version:
+
+- **🖐 Hand detailer**: same circuit as faces (enlarged crop -> high-res
+  img2img refine -> feathered paste), YOLOv8 hand detection running as a PURE
+  ONNX session (onnxruntime, CPU by default). The torch/ultralytics model is
+  exported once to cache/ in a SUBPROCESS and never imported in the app
+  process - that isolation is a hard requirement: a merely-resident torch YOLO
+  model corrupts the shared diffusion weights during offload transfers
+  (checksum-proven on crispz-studio, 2026-08-17; renders degrade to mosaic
+  then NaN). Config hand_detailer* keys; optional 'ultralytics' + 'onnx'
+  packages (requirements-extra.txt) for the one-time export.
+- **Local crop prompts** (face_detailer_prompt / hand_detailer_prompt, empty
+  by default): feeding the SCENE prompt to a crop makes the model repaint the
+  scene inside it (observed: a sign's text written on refined cheeks, a tiny
+  face between thumb and index). Empty = the refine only sharpens the crop.
+- UI: 🖐 checkbox + hand denoise slider (live), wired next to the face ones.
+
 ## Unreleased — dequant disk cache (ported from crispz-studio) + metadata-ConvRot fix
 
 FP8/INT8 'scaled' checkpoints were re-dequantized at EVERY load (minutes on a
