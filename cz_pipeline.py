@@ -549,6 +549,116 @@ def _safetensors_dequant(path):
 _FLUX_KEY_MARKERS = ("double_blocks.", "single_blocks.", "transformer_blocks.")
 
 
+# ----------------------------------------------------------------------------
+# Cache disque des transformers dequantifies (FP8/INT8 ComfyUI -> bf16), porte
+# de crispz-studio. Un dequant lit et convertit tout le fichier (minutes sur
+# HDD); le bf16 est ecrit UNE FOIS ici et les chargements suivants deviennent
+# un single-file normal (secondes). CLE = fichier ORIGINAL (chemin+taille+
+# mtime): supprimer ce cache est toujours sur, il se reconstruit a la demande.
+# ----------------------------------------------------------------------------
+import hashlib as _dqhash
+
+_DQ_CACHE_CFG = str(CONFIG.get("dequant_cache", "auto") or "auto").strip()
+try:
+    DEQUANT_CACHE_MAX_GB = float(CONFIG.get("dequant_cache_max_gb", 60) or 0)
+except Exception:
+    DEQUANT_CACHE_MAX_GB = 60.0
+
+
+def _file_key(path):
+    """Identite stable et pas chere d'un fichier: (chemin absolu, taille, mtime)."""
+    st = os.stat(path)
+    return (os.path.abspath(path), st.st_size, int(st.st_mtime))
+
+
+def _dequant_cache_dir():
+    """Dossier du cache de dequant, cree a la demande. None = cache desactive."""
+    if _DQ_CACHE_CFG.lower() in ("off", "none", "0", "false"):
+        return None
+    d = (os.path.join(HERE, "cache", "dequant")
+         if _DQ_CACHE_CFG.lower() in ("auto", "") else _DQ_CACHE_CFG)
+    try:
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception as e:
+        _dbg(f"dequant cache dir unavailable ({e})")
+        return None
+
+
+def _dequant_cache_path(src):
+    """Chemin du bf16 cache pour un checkpoint source. La cle inclut taille+mtime:
+    un fichier remplace (meme nom) ne reutilise jamais l'ancien cache."""
+    d = _dequant_cache_dir()
+    if not d:
+        return None
+    try:
+        p, size, mtime = _file_key(src)
+    except OSError:
+        return None
+    h = _dqhash.sha1(f"{p.lower()}|{size}|{mtime}|bf16".encode("utf-8")).hexdigest()[:16]
+    base = os.path.splitext(os.path.basename(src))[0][:48]
+    return os.path.join(d, f"{base}.{h}.safetensors")
+
+
+def _dequant_cache_prune(keep=None):
+    """Plafonne le cache (dequant_cache_max_gb, 0 = illimite): supprime les fichiers
+    les moins recemment UTILISES (atime, sinon mtime) jusqu'a repasser sous le seuil."""
+    d = _dequant_cache_dir()
+    if not d or DEQUANT_CACHE_MAX_GB <= 0:
+        return
+    try:
+        files = []
+        for f in os.listdir(d):
+            fp = os.path.join(d, f)
+            if not f.endswith(".safetensors") or not os.path.isfile(fp):
+                continue
+            st = os.stat(fp)
+            files.append((max(st.st_atime, st.st_mtime), st.st_size, fp))
+        total = sum(s for _t, s, _p in files)
+        cap = DEQUANT_CACHE_MAX_GB * 1024**3
+        for _t, size, fp in sorted(files):          # plus ancien acces d'abord
+            if total <= cap:
+                break
+            if keep and os.path.abspath(fp) == os.path.abspath(keep):
+                continue
+            try:
+                os.remove(fp)
+                total -= size
+                _log(f"dequant cache: evicted {os.path.basename(fp)} "
+                     f"({size / 1024**3:.1f} GB, over the {DEQUANT_CACHE_MAX_GB:.0f} GB cap)")
+            except OSError as e:
+                _dbg(f"dequant cache evict failed {fp}: {e}")
+    except Exception as e:
+        _dbg(f"dequant cache prune failed: {e}")
+
+
+def _dequant_cache_store(src, sd):
+    """Ecrit le state dict dequantifie dans le cache (best effort: toute erreur est
+    ignoree, le chargement courant a deja le dict en memoire). Ecriture atomique via
+    un .tmp renomme -> une interruption ne laisse jamais un cache tronque."""
+    dst = _dequant_cache_path(src)
+    if not dst:
+        return
+    try:
+        from safetensors.torch import save_file
+        t0 = time.time()
+        tmp = dst + ".tmp"
+        # contiguous(): safetensors refuse les vues non contigues (issues des slices
+        # de dequant); clone implicite, on est deja en RAM.
+        save_file({k: v.contiguous() for k, v in sd.items()}, tmp)
+        os.replace(tmp, dst)
+        gb = os.path.getsize(dst) / 1024**3
+        _log(f"dequant cache: saved {gb:.1f} GB in {time.time() - t0:.1f}s "
+             f"-> next load of this checkpoint skips the dequant")
+        _dequant_cache_prune(keep=dst)
+    except Exception as e:
+        _log(f"dequant cache: not saved ({e})")
+        try:
+            os.remove(dst + ".tmp")
+        except OSError:
+            pass
+
+
 def _hadamard_ortho(n):
     """Matrice 'regular hadamard' du ConvRot comfy-quants -- ATTENTION, ce n'est PAS
     la construction de Sylvester: la base est ce H4 precis, etendu par produits de
@@ -612,6 +722,24 @@ def _load_dequant_state_dict(path):
     entries.sort(key=lambda kv: kv[1].get("data_offsets", [0])[0])
     raw = {}
     qcfg = {}
+    # comfy-quants declare le schema soit en blobs PAR TENSEUR (X.comfy_quant),
+    # soit CENTRALEMENT dans __metadata__._quantization_metadata (variante
+    # StableYogi: {"layers": {"blocks...": {"format": "int8_tensorwise",
+    # "convrot": true, "convrot_groupsize": 256}}}). Ignorer cette variante
+    # laisse la rotation en place -> poids en bruit total (observe sur les
+    # INT8 Krea 2; meme format possible ici). Les blobs par tenseur gagnent.
+    try:
+        qm = json.loads((hdr.get("__metadata__") or {}).get(
+            "_quantization_metadata") or "{}")
+        for lk, lv in (qm.get("layers") or {}).items():
+            if isinstance(lv, dict):
+                qcfg[lk] = lv
+                qcfg["model.diffusion_model." + lk] = lv   # variante AIO prefixee
+        if qcfg:
+            _dbg(f"quantization metadata: {len(qm.get('layers') or {})} layer(s) "
+                 "declared in header")
+    except Exception as e:
+        _dbg(f"_quantization_metadata unreadable: {e}")
     with safe_open(path, framework="pt", device="cpu") as f:
         for k, _ in entries:
             if k.endswith(".comfy_quant"):   # blob JSON: format + convrot eventuels
@@ -1066,9 +1194,26 @@ def _load_transformer():
                 # FP8/INT8 'scaled' ComfyUI (ex. flux1-krea-dev_fp8_scaled, builds
                 # Civitai legers) -> dequant en RAM puis chargement du dict
                 # (conversion de cles diffusers incluse).
+                # Deja dequantifie une fois ? -> relire le bf16 du cache
+                # disque: un single-file normal (secondes) au lieu de reconvertir
+                # tout le fichier (minutes sur HDD).
+                cached = _dequant_cache_path(ZIMAGE_TRANSFORMER)
+                if cached and os.path.isfile(cached):
+                    _log(f"loading Flux transformer ({dq} -> bf16, from dequant "
+                         f"cache): {os.path.basename(cached)}")
+                    try:
+                        os.utime(cached, None)       # marque l'usage pour le LRU
+                    except OSError:
+                        pass
+                    return _load_monitor(
+                        f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)} (cached bf16)",
+                        lambda: FluxTransformer2DModel.from_single_file(
+                            cached, config=BASE_REPO, subfolder="transformer",
+                            torch_dtype=DTYPE))
                 _log(f"loading Flux transformer (single-file, {dq} ComfyUI -> "
                      f"dequantized to bf16): {ZIMAGE_TRANSFORMER} ...")
                 sd = _load_dequant_state_dict(ZIMAGE_TRANSFORMER)
+                _dequant_cache_store(ZIMAGE_TRANSFORMER, sd)
                 return _load_monitor(
                     f"transformer {os.path.basename(ZIMAGE_TRANSFORMER)} ({dq})",
                     lambda: FluxTransformer2DModel.from_single_file(

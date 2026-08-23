@@ -141,5 +141,9 @@
     "provenance_wm_id": "crispzAI",
     "_provenance_wm_id_help": "Identifier embedded in the TrustMark watermark. Max 9 ASCII characters (error-corrected payload is ~68 bits) - longer values are truncated. E.g. your studio tag.",
 
+    "dequant_cache": "auto",
+    "_dequant_cache_help": "Where the bf16 result of a FP8/INT8 dequant is cached, so the SAME checkpoint loads in seconds next time instead of minutes. 'auto' (default) = <app>/cache/dequant (gitignored), any path = custom folder, 'off' = never cache. Each entry weighs as much as the BF16 build; safe to delete any time (rebuilt on demand).",
+    "dequant_cache_max_gb": 60,
+    "_dequant_cache_max_gb_help": "Size cap of that cache in GB; least-recently-used entries are evicted past it. 0 = unlimited.",
     "log_level": "info"
 }

@@ -3,6 +3,19 @@
 All notable changes to crispz-studio. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — dequant disk cache (ported from crispz-studio) + metadata-ConvRot fix
+
+FP8/INT8 'scaled' checkpoints were re-dequantized at EVERY load (minutes on a
+HDD). The bf16 result is now written once to cache/dequant (config
+dequant_cache, LRU cap dequant_cache_max_gb) and the next loads of the same
+checkpoint become a normal single-file read (seconds). Keyed on the ORIGINAL
+file (path+size+mtime) - deleting the cache is always safe, it rebuilds on
+demand. Also ported: comfy-quants can declare the int8_tensorwise/ConvRot
+scheme centrally in __metadata__._quantization_metadata instead of per-tensor
+blobs; ignoring that variant dequantized such checkpoints to pure noise
+(caught on Krea 2, same format possible here). Both styles are now read.
+Tests: tests/test_dequant_cache.py (5) + metadata-convrot roundtrip.
+
 ## Unreleased — queue: persistence + soft ⏸ Pause (ported from crispz-studio)
 
 The job queue now SURVIVES a restart or crash: saved to cache/queue.json after
