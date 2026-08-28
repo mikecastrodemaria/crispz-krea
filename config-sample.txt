@@ -154,6 +154,9 @@
         "_cache_dir_help": "Where thumbnails are cached. Empty (default) = <app>/cache (the app folder, gitignored - usually a fast disk, much faster than an HDD/NAS output folder). 'output' = next to the images (<out>/_index/thumbs, relative URLs). Any path = custom cache (e.g. an SSD): thumbnails go to <cache_dir>/crispz-thumbs/<slug>/. Also settable in the UI (Save > Asset Browser). Safe to delete at any time (rebuilt on demand)."
     },
 
+    "cli_protocol": {"instance_url": "http://127.0.0.1:7860"},
+    "_cli_protocol_help": "Family CLI protocol v1 (czp.bat / cz_protocol.py): JSON spec in, JSON out. 'czp gen --spec spec.json' ROUTES to the app instance running at instance_url (its queue serializes the GPU, model stays warm) and only loads the pipeline itself when no instance answers (night batch; or force with --local / --remote URL). 'czp caps' prints this tool's capabilities + whether an instance is running. Exit codes: 0 ok, 1 run error, 2 bad spec, 3 unsupported op/protocol, 4 no route. One image per call - the caller loops.",
+
     "provenance_watermark": "off",
     "_provenance_watermark_help": "on = embed an invisible TrustMark watermark (Adobe, open source) in every saved image, for machine-readable AI disclosure (EU AI Act art. 50, applicable Aug 2 2026). Needs 'pip install trustmark' (see requirements-extra.txt); model (~40 MB) downloads on first use, then ~0.1s/image on CPU (the GPU is never touched). off (default) = no watermark. Read watermarks anytime via PNG Info > Check invisible watermark, or cz.bat --provenance -i img.png.",
     "provenance_wm_id": "crispzAI",

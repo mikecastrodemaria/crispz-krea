@@ -1065,3 +1065,15 @@ the default and the best choice under ~2048px (no regression).
 ## License
 
 CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial). See `LICENSE.txt`.
+
+## Family CLI protocol (v1)
+
+This tool speaks the crispz-family CLI protocol: `czp.bat gen --spec spec.json`
+(JSON spec in, one-line JSON out) **routes to the running app** when there is
+one (hidden `cli_caps`/`cli_gen` endpoints - the app's queue serializes the
+GPU and the model stays warm) and only loads the pipeline itself when no
+instance answers (night batch; `--local`/`--remote URL` force a route).
+`czp caps` prints capabilities and whether an instance is running. Exit codes:
+0 ok / 1 run error / 2 bad spec / 3 unsupported op or protocol / 4 no route.
+Config `cli_protocol.instance_url`. Contract + client reference:
+the comics2crispz repo (`docs/CLI_PROTOCOL.md`).
