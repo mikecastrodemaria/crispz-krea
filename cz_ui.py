@@ -2874,6 +2874,30 @@ def _api_cli_gen(spec_json):
                       ensure_ascii=False)
 
 
+def _api_cli_faces(img_b64):
+    """api_name='cli_faces': face-detection service for the family (boxes,
+    mouths, embeddings from a base64 PNG/JPEG). Lets torch-free callers
+    (comics2crispz) letter with the SAME face-aware placement as the app:
+    bubbles avoid faces, tails aim at the speaker's mouth."""
+    import base64
+    import io
+    try:
+        from cz_face import detect_faces_full
+        img = Image.open(io.BytesIO(base64.b64decode(img_b64))).convert("RGB")
+        faces = []
+        for f in detect_faces_full(img) or []:
+            faces.append({
+                "box": [int(v) for v in f["box"]],
+                "mouth": ([int(f["mouth"][0]), int(f["mouth"][1])]
+                          if f.get("mouth") else None),
+                "embedding": ([float(x) for x in f["embedding"]]
+                              if f.get("embedding") else None)})
+        return json.dumps({"ok": True, "faces": faces})
+    except Exception as e:
+        return json.dumps({"ok": False,
+                           "error": f"{type(e).__name__}: {e}"})
+
+
 def build_ui():
     models = list_esrgan_models()
     default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else (models[0] if models else None)
@@ -2928,6 +2952,10 @@ def build_ui():
         clg_out = gr.Textbox(visible=False)
         clg_btn = gr.Button(visible=False)
         clg_btn.click(_api_cli_gen, clg_in, clg_out, api_name="cli_gen")
+        clf_in = gr.Textbox(visible=False)
+        clf_out = gr.Textbox(visible=False)
+        clf_btn = gr.Button(visible=False)
+        clf_btn.click(_api_cli_faces, clf_in, clf_out, api_name="cli_faces")
 
         with gr.Row():
             # ===== Colonne principale (apercu en haut, prompt + Generate, negative, input) =====
