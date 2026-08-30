@@ -1,5 +1,5 @@
 @echo off
-REM crispz-studio - launch N parallel CivitAI enrichment shards (disjoint file lists).
+REM crispz-krea - launch N parallel CivitAI enrichment shards (disjoint file lists).
 REM Usage:  civitai_index_parallel.bat [N]     (default N=4; kind=all)
 REM Each shard is an independent process (its own window). CivitAI rate-limits: keep N
 REM modest and set a CivitAI API key in the app (Advanced) or pass --api-key per shard.

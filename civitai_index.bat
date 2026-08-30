@@ -1,5 +1,5 @@
 @echo off
-REM crispz-studio - batch CivitAI enrichment (previews / trigger words / example prompts /
+REM crispz-krea - batch CivitAI enrichment (previews / trigger words / example prompts /
 REM new-version warnings). Pass-through args, e.g.:  civitai_index.bat --kind loras --force
 REM Run several of these at once (or use civitai_index_parallel.bat) to fetch in parallel.
 setlocal

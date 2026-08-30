@@ -16,7 +16,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 REM Pipeline attendu pour cette famille de modele. SEULE ligne qui differe
-REM entre crispz-studio (ZImage), crispz-krea (Flux) et crispz-qwen-edit (Qwen).
+REM entre crispz-krea (ZImage), crispz-krea (Flux) et crispz-qwen-edit (Qwen).
 set CHECK_PIPE=FluxImg2ImgPipeline
 
 REM --- flags ---
