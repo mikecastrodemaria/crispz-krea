@@ -1,5 +1,5 @@
 @echo off
-REM crispz-studio - X/Y/Z grid CLI example (see README_CLI.md).
+REM crispz-krea - X/Y/Z grid CLI example (see README_CLI.md).
 REM Runs a small 2x2 comparison grid (Steps x Guidance) for a prompt, then prints
 REM the annotated contact-sheet path (saved in out\xyz_<timestamp>\).
 REM

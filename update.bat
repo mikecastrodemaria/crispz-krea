@@ -1,5 +1,5 @@
 @echo off
-REM Update crispz-studio (Windows): recupere les commits GitHub puis remet les
+REM Update crispz-krea (Windows): recupere les commits GitHub puis remet les
 REM dependances en phase avec le lock, SANS casser l'installation existante.
 REM
 REM Fait, dans l'ordre:
@@ -17,7 +17,7 @@ REM   --no-pull      sauter le git pull (resynchroniser les deps seulement)
 REM   --shared       utiliser requirements.txt au lieu du lock (venv partage)
 
 setlocal enabledelayedexpansion
-title crispz-studio - Update
+title crispz-krea - Update
 cd /d "%~dp0"
 
 set "FORCEDEPS=0"
@@ -32,7 +32,7 @@ shift
 goto argloop
 :argdone
 
-echo === crispz-studio - update ===
+echo === crispz-krea - update ===
 echo.
 
 REM --- Interpreteur ---
