@@ -1074,6 +1074,11 @@ This tool speaks the crispz-family CLI protocol: `czp.bat gen --spec spec.json`
 one (hidden `cli_caps`/`cli_gen` endpoints - the app's queue serializes the
 GPU and the model stays warm) and only loads the pipeline itself when no
 instance answers (night batch; `--local`/`--remote URL` force a route).
+Ops: `gen`, `upscale` (`input` + `factor`/`denoise`; **`factor` 1 = pure img2img
+variation, no ESRGAN stage**), `edit` (image + instruction; needs an edit
+model - see `caps.supports.edit`). A broken `config.txt` (invalid JSON, e.g.
+single backslashes in a Windows path) is reported loudly at startup instead
+of silently falling back to the sample.
 `czp caps` prints capabilities and whether an instance is running. Exit codes:
 0 ok / 1 run error / 2 bad spec / 3 unsupported op or protocol / 4 no route.
 Config `cli_protocol.instance_url`. Contract + client reference:
