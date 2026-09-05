@@ -1076,7 +1076,8 @@ GPU and the model stays warm) and only loads the pipeline itself when no
 instance answers (night batch; `--local`/`--remote URL` force a route).
 Ops: `gen`, `upscale` (`input` + `factor`/`denoise`; **`factor` 1 = pure img2img
 variation, no ESRGAN stage**), `edit` (image + instruction; needs an edit
-model - see `caps.supports.edit`). A broken `config.txt` (invalid JSON, e.g.
+model - see `caps.supports.edit`), `inpaint` (image + mask + local
+prompt: only the white area is redrawn, every engine). A broken `config.txt` (invalid JSON, e.g.
 single backslashes in a Windows path) is reported loudly at startup instead
 of silently falling back to the sample.
 `czp caps` prints capabilities and whether an instance is running. Exit codes:
