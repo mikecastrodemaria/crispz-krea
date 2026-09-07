@@ -245,10 +245,84 @@ def _cfg_kwargs(negative):
     return {}
 
 
+# --- Cache d'embeddings de prompt -------------------------------------------------
+# Encoder un prompt fait passer l'encodeur de texte par le GPU. En offload 'model'
+# ce transfert est paye a CHAQUE appel de pipeline -- y compris les passes du
+# detailer, qui refont le MEME prompt une fois par visage et par main.
+# Mesure sur crispz-klein (9B GGUF, offload model): prompt+setup 5,2-6,1 s par
+# passe sans cache contre 1,7-1,8 s avec, pour 0,3 s de diffusion. 2,1x par main.
+# Sans offload le gain tombe a ~8 % (l'encodeur est deja resident, rien a deplacer).
+#
+# encode_prompt() court-circuite l'encodeur des qu'on lui passe ses embeddings. On
+# memorise donc le TUPLE qu'il renvoie et on le repasse a __call__ via _EMBED_OUTS.
+# Les tenseurs sont gardes en RAM (quelques Mo): ils ne retiennent pas de VRAM et
+# survivent aux deplacements de l'offload.
+# Flux: encode_prompt -> (prompt_embeds, pooled_prompt_embeds, text_ids).
+# __call__ prend les deux premiers; text_ids est recalcule.
+_EMBED_OUTS = ("prompt_embeds", "pooled_prompt_embeds")
+_EMBED_CACHE = {}
+_EMBED_CACHE_MAX = max(0, int(CONFIG.get("prompt_embed_cache", 8) or 0))
+
+
+def _embed_cache_clear(why=""):
+    """Vide le cache. Appele des que l'encodeur peut avoir change (repo de base,
+    liberation de VRAM): un embedding calcule par un autre encodeur est faux."""
+    if _EMBED_CACHE:
+        _dbg(f"prompt embed cache cleared ({len(_EMBED_CACHE)} entries){why}")
+    _EMBED_CACHE.clear()
+
+
+def _cached_prompt_embeds(pipe, prompt, kw):
+    """Embeddings de `prompt` pour ce pipeline, calcules une fois puis reutilises.
+
+    Renvoie un dict de kwargs pour __call__, ou None si le cache est desactive, si
+    le pipeline n'expose pas l'API attendue, ou si l'encodage echoue: dans tous ces
+    cas l'appelant repasse le prompt en clair et rien ne change. Un cache ne doit
+    jamais casser un rendu."""
+    if not _EMBED_CACHE_MAX or not _EMBED_OUTS:
+        return None
+    try:
+        enc = getattr(pipe, "text_encoder", None)
+        if enc is None or not hasattr(pipe, "encode_prompt"):
+            return None
+        # Les LoRA font partie de la clef: certaines touchent l'encodeur de texte,
+        # et un embedding calcule sans elles serait faux.
+        key = (BASE_REPO, id(enc), prompt, kw.get("max_sequence_length"),
+               tuple(sorted((p, float(w)) for p, w in _APPLIED_LORAS)))
+        hit = _EMBED_CACHE.get(key)
+        if hit is None:
+            out = pipe.encode_prompt(prompt=prompt, device=pipe._execution_device)
+            if not isinstance(out, (tuple, list)):
+                out = (out,)
+            hit = tuple(v.detach().to("cpu") if hasattr(v, "detach") else v
+                        for v in out[:len(_EMBED_OUTS)])
+            if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+                _EMBED_CACHE.pop(next(iter(_EMBED_CACHE)))      # FIFO, borne simple
+            _EMBED_CACHE[key] = hit
+            _dbg(f"prompt embeds computed and cached ({len(_EMBED_CACHE)}/"
+                 f"{_EMBED_CACHE_MAX}) for {prompt[:40]!r}")
+        else:
+            _dbg(f"prompt embeds reused (text encoder not touched) for {prompt[:40]!r}")
+        dev = pipe._execution_device
+        return {name: (v.to(dev) if hasattr(v, "to") else v)
+                for name, v in zip(_EMBED_OUTS, hit) if name}
+    except Exception as e:
+        _dbg(f"prompt embed cache off for this call ({type(e).__name__}: {e})")
+        return None
+
+
 def _flux_call(pipe, **kw):
     """Appelle un pipeline Flux en tolerant les variations d'API diffusers : si la version
     installee ne connait pas `true_cfg_scale` / `negative_prompt` (anciennes builds), on
     retire ces kwargs et on relance plutot que de crasher la generation."""
+    # Reutilise les embeddings si ce prompt a deja ete encode (cf. _EMBED_CACHE).
+    # Les passer fait sauter l'encodeur de texte: c'est tout le gain.
+    if isinstance(kw.get("prompt"), str) and not any(k in kw for k in _EMBED_OUTS):
+        _emb = _cached_prompt_embeds(pipe, kw["prompt"], kw)
+        if _emb:
+            kw.update(_emb)
+            kw["prompt"] = None
+
     try:
         return pipe(**kw)
     except TypeError as e:
@@ -1070,6 +1144,7 @@ def free_vram():
     _DERIVED = {}
     _LOADED_KEY = None
     _APPLIED_LORAS = []      # plus de pipe -> plus d'adaptateur pose
+    _embed_cache_clear(" (VRAM freed)")
     gc.collect()
     if DEVICE == "cuda":
         torch.cuda.empty_cache()

@@ -3,6 +3,31 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — cache the encoded prompt: stop moving the text encoder per call
+
+Encoding a prompt walks the text encoder onto the GPU. Under
+`default_cpu_offload: "model"` — which this fork ships — that transfer is paid on
+**every** pipeline call, and the detailer pays it once per face and once per hand,
+for the same prompt every time.
+
+Measured on crispz-klein (9B GGUF, offload `model`), per detailer pass:
+`prompt+setup` **5.2–6.1 s → 1.7–1.8 s** for 0.3 s of diffusion — **2.1×** per
+hand. Without offload the gain falls to ~8 %: the encoder is already resident,
+there is nothing to avoid moving.
+
+`encode_prompt()` short-circuits the encoder as soon as it is handed its
+embeddings, so the tuple it returns is cached and passed back to `__call__`
+through `_EMBED_OUTS` — this family's pipeline returns more than one tensor
+(a mask here, `pooled_prompt_embeds` on Flux), and dropping one would break the
+call. Cached in RAM (a few MB, no VRAM held, survives offload moves), bounded,
+and keyed on the base repo, the encoder identity, the prompt **and the applied
+LoRAs** — a LoRA can touch the text encoder, and an embedding computed without it
+would be wrong. Cleared whenever the pipeline is freed. Any failure falls back to
+passing the prompt through: a cache must never cost a render.
+`prompt_embed_cache: 0` disables it.
+
+Regression test: `tests/test_prompt_embed_cache.py`.
+
 ## Unreleased — the Models tab was empty on any install that keeps models elsewhere
 
 The Asset Browser catalogue walked only the **main** checkpoints folder and
