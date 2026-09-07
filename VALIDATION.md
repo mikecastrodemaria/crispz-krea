@@ -50,7 +50,7 @@ quick **manual** check in the running UI. Run `run.bat`, hard-refresh
 ## Launchers / sharing (optional)
 - [ ] `boot_check_lan.bat` → open `http://<LAN-IP>:7860` from another device.
 - [ ] `boot_check_web.bat` (+ `cloudflare.local.bat`) → tunnel URL works.
-- [ ] Pinokio: install `mikecastrodemaria/crispz-studio.pinokio` → Install → Start → Open Web UI.
+- [ ] Pinokio: install `mikecastrodemaria/crispz-krea.pinokio` → Install → Start → Open Web UI.
 
 ## Notes
 - GPU tight with Ollama? set `ollama_cpu: true` (CPU captions) or `ollama_keep_alive: 0` (already default).
