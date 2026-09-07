@@ -1,4 +1,4 @@
-"""crispz-studio - Tag autocomplete: sources cote serveur.
+"""crispz-krea - Tag autocomplete: sources cote serveur.
 
 Telecharge UNE FOIS les CSV de tags (config tag_autocomplete.sources) dans tags/,
 de facon atomique avec progression console. Tout .csv depose dans tags/ devient une

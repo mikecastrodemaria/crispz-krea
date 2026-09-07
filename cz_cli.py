@@ -1,4 +1,4 @@
-"""crispz-studio - CLI (mode batch / scripting) + serveur HTTP persistant (FastAPI).
+"""crispz-krea - CLI (mode batch / scripting) + serveur HTTP persistant (FastAPI).
 
 Extrait de app.py (step 8). Importe l'UI et l'orchestration depuis cz_ui (qui branche
 tous les cz_*); ne redefinit rien du pipeline. app.py se contente d'appeler cli_main.
@@ -303,7 +303,7 @@ def cli_main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="crispz-studio CLI (txt2img + upscale). No args: launches the Gradio UI.",
+        description="crispz-krea CLI (txt2img + upscale). No args: launches the Gradio UI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--cli", action="store_true", help="Force CLI mode (otherwise: launches the UI)")

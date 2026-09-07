@@ -1,4 +1,4 @@
-# crispz-studio — environnement verrouille, venv ISOLE.
+# crispz-krea — environnement verrouille, venv ISOLE.
 #
 # POURQUOI CE FICHIER
 # requirements.txt donne les bornes ("ce qui doit marcher"). Ce fichier donne

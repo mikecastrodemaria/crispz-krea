@@ -1,4 +1,4 @@
-"""crispz-studio - image saving, metadata and output filenames.
+"""crispz-krea - image saving, metadata and output filenames.
 
 Extrait de app.py. I/O pure: ne depend que de cz_core (config/paths/log) + PIL.
 _gen_meta (qui construit le dict de metadonnees a partir de l'etat modele) reste

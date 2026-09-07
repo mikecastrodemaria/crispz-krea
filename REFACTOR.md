@@ -1,4 +1,4 @@
-# crispz-studio — Refactor plan (app.py modularization)
+# crispz-krea — Refactor plan (app.py modularization)
 
 `app.py` is ~3.5k lines. It works and is covered by `smoke_test.py`, but should be
 split for maintainability. This is a **staged** plan: each step keeps `app.py`

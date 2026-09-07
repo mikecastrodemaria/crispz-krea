@@ -1,4 +1,4 @@
-"""crispz-studio - prompt helpers: styles (Fooocus) + wildcards (__name__).
+"""crispz-krea - prompt helpers: styles (Fooocus) + wildcards (__name__).
 
 Extrait de app.py. Ne depend que de cz_core (HERE/CONFIG/_prefs) + stdlib. Les
 handlers d'UI (gestionnaire de wildcards, recherche de styles) restent dans app.py.

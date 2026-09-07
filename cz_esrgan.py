@@ -1,4 +1,4 @@
-"""crispz-studio - Real-ESRGAN (charge via spandrel) + upscale tuile/overlap-add.
+"""crispz-krea - Real-ESRGAN (charge via spandrel) + upscale tuile/overlap-add.
 
 Extrait de app.py. Calcul "feuille": ne depend que de cz_core (config/paths/log/
 device) + numpy/torch/PIL. L'etat mutable (ESRGAN_DIR + cache des modeles charges)

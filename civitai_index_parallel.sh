@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crispz-studio - launch N parallel CivitAI enrichment shards (disjoint file lists).
+# crispz-krea - launch N parallel CivitAI enrichment shards (disjoint file lists).
 # Usage:  ./civitai_index_parallel.sh [N]     (default N=4; kind=all)
 # CivitAI rate-limits: keep N modest and set a CivitAI API key in the app (Advanced) or
 # pass --api-key. Waits for all shards, then reports.

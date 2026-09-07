@@ -1,4 +1,4 @@
-# crispz-studio — Validation checklist (in-browser)
+# crispz-krea — Validation checklist (in-browser)
 
 `smoke_test.py` covers the pure logic (no GPU/browser). The items below need a
 quick **manual** check in the running UI. Run `run.bat`, hard-refresh

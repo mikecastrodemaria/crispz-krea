@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crispz-studio - batch CivitAI enrichment (previews / trigger words / example prompts /
+# crispz-krea - batch CivitAI enrichment (previews / trigger words / example prompts /
 # new-version warnings). Pass-through args, e.g.:  ./civitai_index.sh --kind loras --force
 # Run several at once (or use civitai_index_parallel.sh) to fetch in parallel.
 set -euo pipefail

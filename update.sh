@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update crispz-studio (Unix): recupere les commits GitHub puis remet les
+# Update crispz-krea (Unix): recupere les commits GitHub puis remet les
 # dependances en phase avec le lock, SANS casser l'installation existante.
 #
 #   --force-deps   reinstaller les deps meme si rien n'a change
@@ -17,7 +17,7 @@ for a in "$@"; do
   esac
 done
 
-echo "=== crispz-studio - update ==="
+echo "=== crispz-krea - update ==="
 RUNPY=python3
 [ -x ".venv/bin/python" ] && RUNPY=".venv/bin/python"
 [ -x "env/bin/python" ] && RUNPY="env/bin/python"

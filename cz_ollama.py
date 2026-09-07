@@ -1,4 +1,4 @@
-"""crispz-studio - Ollama integration (Describe / Improve / Vision Mix).
+"""crispz-krea - Ollama integration (Describe / Improve / Vision Mix).
 
 Extrait de app.py. Appelle l'API HTTP locale d'Ollama (/api/tags, /api/show,
 /api/generate). Ne depend que de cz_core (config, log, b64). Les handlers d'UI

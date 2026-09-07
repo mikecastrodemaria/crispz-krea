@@ -1,4 +1,4 @@
-﻿"""crispz-studio - FaceSwap (InsightFace/inswapper) + restauration GFPGAN, caption
+﻿"""crispz-krea - FaceSwap (InsightFace/inswapper) + restauration GFPGAN, caption
 local BLIP (fallback Ollama) et detourage rembg.
 
 Extrait de app.py. Calcul "feuille" optionnel (features gated): ne depend que de

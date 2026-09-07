@@ -1,4 +1,4 @@
-"""crispz-studio - Z-Image txt2img + upscaler/detailer (standalone, sans ComfyUI).
+"""crispz-krea - Z-Image txt2img + upscaler/detailer (standalone, sans ComfyUI).
 
 Point d'entree mince. Tout le code a ete decoupe en modules cz_* :
   cz_core (config/paths/logging/device) · cz_imageio (I/O image) · cz_prompt (styles/

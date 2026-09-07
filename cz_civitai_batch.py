@@ -1,4 +1,4 @@
-"""crispz-studio — batch CivitAI enrichment (standalone, no torch import → starts fast).
+"""crispz-krea — batch CivitAI enrichment (standalone, no torch import → starts fast).
 
 Scans the LoRA and/or checkpoint folders and, for every `.safetensors`, fetches the
 missing CivitAI info (preview + trigger words + example prompts) and refreshes the
@@ -178,7 +178,7 @@ def main(argv=None):
             _s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-    ap = argparse.ArgumentParser(description="Batch CivitAI enrichment for crispz-studio "
+    ap = argparse.ArgumentParser(description="Batch CivitAI enrichment for crispz-krea "
                                              "(previews / trigger words / example prompts / "
                                              "new-version warnings).")
     ap.add_argument("--kind", choices=["loras", "models", "all"], default="all")

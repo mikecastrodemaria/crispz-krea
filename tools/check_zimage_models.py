@@ -25,7 +25,7 @@ def main():
     found = [r for r in REPOS if repo_exists(r)]
     if found:
         print("AVAILABLE: " + ", ".join(found)
-              + " -> set 'zimage_omni_model' in crispz-studio/config.txt")
+              + " -> set 'zimage_omni_model' in crispz-krea/config.txt")
         return 0
     print("not yet: " + ", ".join(REPOS) + " (still 'coming soon')")
     return 1

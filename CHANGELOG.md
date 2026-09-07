@@ -1,7 +1,24 @@
 # Changelog
 
-All notable changes to crispz-studio. One versioned entry per feature.
+All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
+
+## Unreleased — the app finally calls itself by its own name
+
+Everything below the `TOOL` constant still said **crispz-studio**: the README
+title and its blockquote (which also advertised *Z-Image* — the parent's model,
+not this fork's), the CHANGELOG header, every module docstring, the shell script
+banners, `SECURITY.md` end to end, and — visible on every run — the **browser tab
+title**, the Asset Browser page and header, the CLI `--help`, and the User-Agent
+sent to CivitAI and Hugging Face.
+
+A security policy naming the wrong repository is the worst of these: it routes
+vulnerability reports to another project.
+
+Renamed only where the text names **this** application. Provenance is history and
+stays untouched: `FORK.md`, "ported from crispz-studio", "measured on
+crispz-studio", the family enumerations in `cz_protocol.py` and `install.sh`, and
+the cross-references telling you to pass an image through a sibling app.
 
 ## Unreleased — the hand detailer was declared missing while it was ready to run
 

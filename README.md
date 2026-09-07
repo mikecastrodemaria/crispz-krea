@@ -1,12 +1,13 @@
-# crispz-studio
+# crispz-krea
 
-> Z-Image txt2img + upscaler/detailer studio (a Fooocus-style fork of
-> [crispz](https://github.com/mikecastrodemaria/crispz)).
+> FLUX.1-Krea txt2img + upscaler/detailer studio (a Fooocus-style fork of
+> [crispz](https://github.com/mikecastrodemaria/crispz) via
+> [crispz-studio](https://github.com/mikecastrodemaria/crispz-studio)).
 > Current version: **1.16.0** — see [CHANGELOG.md](CHANGELOG.md).
 
-![crispz-studio — Z-Image creation + enhancement studio](assets/screenshot.png)
+![crispz-krea — FLUX.1-Krea creation + enhancement studio](assets/screenshot.png)
 
-A standalone Z-Image **creation + enhancement** tool, **100% local**, no ComfyUI /
+A standalone FLUX.1-Krea **creation + enhancement** tool, **100% local**, no ComfyUI /
 SwarmUI. On top of crispz's upscaler it adds:
 
 - **Text → Image** (`ZImagePipeline`): generate from a prompt, with an optional
@@ -367,7 +368,7 @@ dep/model is missing, the run still succeeds and the report says `faceswap skipp
 inswapper produces a **128 px** face and insightface pastes it back through a plain
 **rectangle**. That rectangle is blind to what is in front of the face: a hand, food,
 a microphone or a strand of hair falling over the mouth gets painted over by the
-generated pixels. crispz-studio therefore does its own compositing, with four passes
+generated pixels. crispz-krea therefore does its own compositing, with four passes
 you can toggle under *Face Swap → Blending quality* (all on by default):
 
 | Setting | What it fixes | Model (auto-downloaded) |

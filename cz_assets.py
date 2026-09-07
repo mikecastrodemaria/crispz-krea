@@ -1,4 +1,4 @@
-"""crispz-studio - UI/static assets (pure strings, no logic).
+"""crispz-krea - UI/static assets (pure strings, no logic).
 
 Extrait de app.py pour alleger le fichier principal:
   - ASSET_BROWSER_HTML : la SPA de l'Asset Browser (deposee dans le dossier de sortie).
@@ -8,7 +8,7 @@ Extrait de app.py pour alleger le fichier principal:
 
 ASSET_BROWSER_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>crispz-studio - Asset Browser</title>
+<title>crispz-krea - Asset Browser</title>
 <style>
 :root{--bg:#0b1018;--panel:#1a2233;--line:#2a3346;--fg:#e6ebf2;--mut:#8b98ad}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
@@ -96,7 +96,7 @@ grid-template-columns:1fr 360px}#exlb.open{display:grid}
 #exlb .nav{z-index:21}#exprev{left:0}#exnext{right:364px}
 #excount{color:var(--mut);font-size:12px;margin-bottom:8px}
 </style></head><body>
-<header><h1>🖼️ crispz-studio</h1>
+<header><h1>🖼️ crispz-krea</h1>
 <input id="q" placeholder="Search metadata (prompt, style, model, seed, sampler...)" style="flex:1;min-width:160px">
 <button class="src active" data-s="outputs">Outputs</button>
 <button class="src" data-s="loras">LoRAs</button>
@@ -368,7 +368,7 @@ function _loadLegacy(tries){return fetch('_index/manifest.json?t='+Date.now())
 .then(function(m){_gen=m.generated||'';_allLoaded=true;_apply(m);_tryFocus();})
 .catch(function(){if(tries>0){grid.innerHTML='<p style="padding:20px;color:#8b98ad">Indexing…</p>';
 setTimeout(function(){_loadLegacy(tries-1);},1200);}
-else grid.innerHTML='<p style="padding:20px;color:#8b98ad">No index yet. Click Reindex in crispz-studio.</p>';});}
+else grid.innerHTML='<p style="padding:20px;color:#8b98ad">No index yet. Click Reindex in crispz-krea.</p>';});}
 function loadSource(src){curSource=src;_folderUserSet=false;curFolder='';
 [].slice.call(document.querySelectorAll('.src')).forEach(function(b){b.classList.toggle('active',b.getAttribute('data-s')===src);});
 var _fa=document.getElementById('fetchall');

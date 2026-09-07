@@ -1,4 +1,4 @@
-# crispz-studio — CLI cheat sheet
+# crispz-krea — CLI cheat sheet
 
 All commands are `python app.py ...` (use your venv: `.venv\Scripts\python app.py ...`).
 Run `python app.py --help` for the full flag list. No args → launches the UI.

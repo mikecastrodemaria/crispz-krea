@@ -3,7 +3,7 @@ collections (SAI, twri, MRE, diva, marc_k3nt3l, Fooocus), adapted here as Z-Imag
 prompt templates.
 
 Format per entry: {"name", "prompt" (with a {prompt} placeholder), "negative_prompt"}.
-crispz-studio loads every styles/*.json at startup and lets you combine them in the
+crispz-krea loads every styles/*.json at startup and lets you combine them in the
 Styles tab; the selected templates wrap your prompt and their negative_prompts are
 merged into the negative prompt.
 

@@ -1,4 +1,4 @@
-"""crispz-studio - CivitAI enrichment for the Asset Browser (previews / trigger words /
+"""crispz-krea - CivitAI enrichment for the Asset Browser (previews / trigger words /
 examples), inspired by Fooocus2026's civitai_api + model_indexer.
 
 Flow (per .safetensors):
@@ -25,7 +25,7 @@ import urllib.error
 from cz_core import _log, _dbg, CONFIG, _prefs
 
 CIVITAI_API = "https://civitai.com/api/v1"
-_UA = "crispz-studio/asset-browser"
+_UA = "crispz-krea/asset-browser"
 
 # Cle API CivitAI (optionnelle: previews gated/NSFW + anti rate-limit). Source: UI
 # (preferences.json) -> config.txt. Reglable a chaud via set_api_key().

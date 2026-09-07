@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crispz-studio - X/Y/Z grid CLI example (see README_CLI.md).
+# crispz-krea - X/Y/Z grid CLI example (see README_CLI.md).
 # Runs a small 2x2 comparison grid (Steps x Guidance) for a prompt, then prints
 # the annotated contact-sheet path (saved in out/xyz_<timestamp>/).
 #

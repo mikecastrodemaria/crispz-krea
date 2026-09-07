@@ -1,4 +1,4 @@
-"""crispz-studio - core foundation (config, paths, logging, device).
+"""crispz-krea - core foundation (config, paths, logging, device).
 
 Extrait de app.py. Aucune dependance sur le reste du projet (app.py et les autres
 modules importent cz_core, jamais l'inverse). Contient:
@@ -251,7 +251,7 @@ def download_with_progress(url, dst, label=None, block=65536, timeout=30):
     label = label or os.path.basename(dst)
     tmp = dst + ".tmp"
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "crispz-studio"})
+    req = urllib.request.Request(url, headers={"User-Agent": "crispz-krea"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
             total = int(r.headers.get("Content-Length") or 0)

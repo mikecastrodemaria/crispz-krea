@@ -1,4 +1,4 @@
-"""crispz-studio - Asset Browser (standalone SPA in the output folder).
+"""crispz-krea - Asset Browser (standalone SPA in the output folder).
 
 Extrait de app.py. Ecrit index.html (SPA) + _index/manifest.json + miniatures dans
 le dossier de sortie, scanne recursivement (sous-dossiers date), et supprime une

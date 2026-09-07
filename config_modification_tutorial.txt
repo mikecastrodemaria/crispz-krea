@@ -1,4 +1,4 @@
-crispz-studio - config tutorial
+crispz-krea - config tutorial
 ================================
 
 HOW IT WORKS
