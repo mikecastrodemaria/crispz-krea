@@ -2245,8 +2245,20 @@ def _gen_meta(mode, prompt, negative="", seed=None, steps=None, guidance=None,
         m["styles"] = _styles
     m["sampler"] = f"{SAMPLER}/{SCHEDULE}"
     m["model"] = model or (ZIMAGE_TRANSFORMER or BASE_REPO)
-    if LORAS:
-        m["loras"] = [f"{os.path.basename(p)}@{w}" for p, w in LORAS]
+    # Un single-file ne remplace que le TRANSFORMER: le VAE, l'encodeur texte et la
+    # config d'architecture viennent du repo de base. Sans lui, l'image n'est pas
+    # reproductible depuis son propre fichier.
+    if ZIMAGE_TRANSFORMER:
+        m["base_repo"] = BASE_REPO
+    # Ce qui a REELLEMENT ete pose, pas ce qui a ete demande: une LoRA peut etre
+    # ecartee en route (fichier absent, format refuse), et signer une image avec une
+    # LoRA qu'elle ne porte pas est un mensonge tranquille -- le pire genre.
+    applied = list(_APPLIED_LORAS)
+    if applied:
+        m["loras"] = [f"{os.path.basename(p)}@{w}" for p, w in applied]
+    missing = [pw for pw in LORAS if pw not in applied]
+    if missing:
+        m["loras_not_applied"] = [f"{os.path.basename(p)}@{w}" for p, w in missing]
     if extra:
         m.update(extra)
     return m

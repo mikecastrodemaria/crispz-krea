@@ -128,6 +128,13 @@ def _a1111_parameters(meta):
             parts.append(f"Size: {size}")
     if meta.get("model"):
         parts.append(f"Model: {os.path.basename(str(meta['model']))}")
+    # Les LoRA manquaient a cette ligne, alors que c'est celle que lisent Civitai et
+    # les visionneuses A1111: une image y arrivait sans rien dire de ce qui l'avait
+    # faconnee.
+    if meta.get("loras"):
+        parts.append(f"Loras: {', '.join(str(v) for v in meta['loras'])}")
+    if meta.get("base_repo"):
+        parts.append(f"Base: {meta['base_repo']}")
     if parts:
         out.append(", ".join(parts))
     return "\n".join(out)

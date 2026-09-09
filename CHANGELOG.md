@@ -3,6 +3,27 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — Metadata that describes the image, not the intention
+
+Two holes, ported from crispz-klein 1.31.0, both the same kind: an image that cannot be
+reproduced from its own file, or worse, one that claims something untrue.
+
+**The list was the LoRAs requested, not the LoRAs applied** — `LORAS`, not
+`_APPLIED_LORAS`. A LoRA can be dropped mid-flight (missing file, refused format), and
+signing an image with a LoRA it does not carry is a silent lie. What was actually
+applied is recorded now, and anything requested but dropped goes to
+`loras_not_applied` rather than vanishing.
+
+**The base repo was missing whenever a single file was selected.** A single file
+replaces the *transformer* only — the VAE, the text encoder and the architecture config
+still come from the base repo — so `model` alone reproduced nothing. `base_repo` sits
+beside it.
+
+Both reach the A1111 `parameters` chunk too, the line Civitai and the A1111 viewers
+actually read, where no LoRA had ever appeared.
+
+Regression tests in `tests/test_gen_meta.py`.
+
 ## Unreleased — cache the encoded prompt: stop moving the text encoder per call
 
 Encoding a prompt walks the text encoder onto the GPU. Under
