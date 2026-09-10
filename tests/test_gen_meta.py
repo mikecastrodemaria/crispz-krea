@@ -87,6 +87,59 @@ def test_the_a1111_chunk_carries_them_too():
     print("OK test_the_a1111_chunk_carries_them_too")
 
 
+# ---------------------------------------------------------------------------
+# L'image d'ENTREE (porte depuis crispz-klein 1.32.0). Une seule des quatre sorties la
+# nommait: le lot (basename en dur), pas l'img2img simple, pas l'inpaint, et l'edition
+# n'ecrivait que le NOMBRE de references. Nom par defaut, pas chemin: le PNG voyage, et
+# Gradio depose les envois dans un dossier temporaire dont seul le nom de base porte le
+# nom d'origine.
+# ---------------------------------------------------------------------------
+
+TMP_UPLOAD = "C:\\Users\\x\\AppData\\Local\\Temp\\gradio\\ab12\\ma_photo.png"
+
+
+def _pil(name=None):
+    from PIL import Image
+    im = Image.new("RGB", (8, 8))
+    if name:
+        im.filename = name
+    return im
+
+
+def test_a_path_a_pil_and_an_editor_all_give_the_name():
+    assert P.source_meta("F:\\in\\shot.png") == {"source": "shot.png"}
+    assert P.source_meta(_pil(TMP_UPLOAD)) == {"source": "ma_photo.png"}
+    assert P.source_meta({"background": _pil(TMP_UPLOAD),
+                          "composite": _pil()}) == {"source": "ma_photo.png"}
+    print("OK test_a_path_a_pil_and_an_editor_all_give_the_name")
+
+
+def test_an_unknown_source_records_nothing():
+    assert P.source_meta(_pil()) == {}
+    assert P.source_meta(None) == {}
+    assert P.source_meta([None, None]) == {}
+    print("OK test_an_unknown_source_records_nothing")
+
+
+def test_several_references_come_back_as_a_list():
+    got = P.source_meta([_pil(TMP_UPLOAD), None, "F:\\in\\other.png", None], "ref_images")
+    assert got == {"ref_images": ["ma_photo.png", "other.png"]}, got
+    print("OK test_several_references_come_back_as_a_list")
+
+
+def test_full_and_off_are_honoured():
+    old = P.METADATA_SOURCE
+    try:
+        P.METADATA_SOURCE = "full"
+        got = P.source_meta("F:\\in\\shot.png")["source"]
+        assert got.endswith("shot.png") and "in" in got, got
+        P.METADATA_SOURCE = "off"
+        assert P.source_meta("F:\\in\\shot.png") == {}
+    finally:
+        P.METADATA_SOURCE = old
+    print("OK test_full_and_off_are_honoured")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

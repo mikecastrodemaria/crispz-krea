@@ -3,6 +3,26 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — The input image, named
+
+Ported from crispz-klein 1.32.0. An img2img, an inpaint or an edit is defined as much
+by its input as by its prompt, and one of the four save paths recorded it: the batch
+path, with a hardcoded basename. The single img2img recorded nothing, nor did
+inpaint / outpaint / reframe, and the edit wrote `refs: 2` -- how many references,
+never which. Now `source` on the first three and `ref_images` next to `refs` on the
+edit. The four sites are inherited from klein word for word; any this fork does not
+expose simply never fire.
+
+**Name by default, not path** (`metadata_source`: `name` | `full` | `off`). The PNG
+travels while the sidecar stays local, so a full path would export the folder tree and
+the Windows session name. In the UI a full path is worthless anyway: Gradio drops
+uploads in a temp folder whose **basename** alone carries the original file name.
+`gr.ImageEditor` values are read `background` before `composite`, since a cropped
+composite is a fresh image with no name. Unknown source (pasted, generated) = nothing
+written: a missing field beats an invented one.
+
+Regression tests in `tests/test_gen_meta.py`.
+
 ## Unreleased — Metadata that describes the image, not the intention
 
 Two holes, ported from crispz-klein 1.31.0, both the same kind: an image that cannot be

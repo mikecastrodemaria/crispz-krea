@@ -137,6 +137,8 @@
     "default_output_format": "png",
     "filename_pattern": "{date}_{tag}_seed{seed}_{w}x{h}{index}",
     "date_subfolders": true,
+    "metadata_source": "name",
+    "_metadata_source_help": "Whether the INPUT image is named in the metadata of an img2img, upscale, inpaint, outpaint or edit. 'name' (default) records the file name only, 'full' the absolute path, 'off' nothing. Name by default because the PNG travels (Civitai, forums, a client) while the sidecar stays local: a full path would export your folder tree and your Windows session name. 'full' is also worthless for anything dropped into the UI, since Gradio stores uploads in a temp folder that will not exist tomorrow - it earns its keep only on batch inputs taken from a folder. Nothing is recorded when the source cannot be known (a pasted or generated image): a missing field beats an invented one.",
     "metadata_scheme": "crispz",
     "wildcards_in_order": false,
     "save_pre_upscale": false,

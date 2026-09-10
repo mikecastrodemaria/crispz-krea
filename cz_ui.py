@@ -272,6 +272,7 @@ from cz_pipeline import (  # noqa: E402,F401
     _norm_schedule, set_force_ratio,
     generate, generate_omni, inpaint_run, outpaint, outpaint_directions, reframe,
     txt2img_run, process_one, round_to_multiple, _reframe_canvas, _gen_meta,
+    source_meta,
 )
 
 # Etat mutable lu en live depuis cz_pipeline.* / cz_face.* (LORAS, FACESWAP_RESTORE,
@@ -457,8 +458,9 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
                         "upscale" if do_esrgan else "img2img", prompt, seed=seed,
                         steps=steps, guidance=cz_pipeline.GUIDANCE, size=result.size,
                         styles=styles,
-                        extra={"source": os.path.basename(p), "factor": factor,
-                               "denoise": denoise, "esrgan": esrgan_model if do_esrgan else None}))
+                        extra={"factor": factor, "denoise": denoise,
+                               "esrgan": esrgan_model if do_esrgan else None,
+                               **source_meta(p)}))
                     if print_output:
                         print(os.path.abspath(dst))
                 _LAST_RUN_DST = dst
@@ -503,7 +505,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
             "upscale" if do_esrgan else "img2img", prompt, seed=seed, steps=steps,
             guidance=cz_pipeline.GUIDANCE, size=result.size, styles=styles,
             extra={"factor": factor, "denoise": denoise,
-                   "esrgan": esrgan_model if do_esrgan else None}))
+                   "esrgan": esrgan_model if do_esrgan else None,
+                   **source_meta(source_path)}))
         if print_output:
             print(os.path.abspath(dst))
     _LAST_RUN_DST = dst
@@ -1086,7 +1089,8 @@ def _ui_edit(mode, editor_value, dirs, ratio, fit, auto_describe, harmonize, har
                 if dst:
                     save_image(res, dst, output_format, meta=_gen_meta(
                         tag, full_prompt, seed=seed, steps=steps, guidance=cz_pipeline.GUIDANCE,
-                        size=res.size, styles=styles))
+                        size=res.size, styles=styles,
+                        extra=source_meta(editor_value)))
             except Exception as e:
                 dst = None
                 _dbg(f"save {tag} failed: {e}")
@@ -1590,7 +1594,9 @@ def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
                     if omni_dst:
                         save_image(img, omni_dst, output_format, meta=_gen_meta(
                             "omni", full_prompt, full_negative, seed, gen_steps, cz_pipeline.GUIDANCE,
-                            img.size, styles=picked_styles, extra={"refs": len(refs)}))
+                            img.size, styles=picked_styles,
+                            extra={"refs": len(refs),
+                                   **source_meta([ref1, ref2, ref3, ref4], "ref_images")}))
                         _dbg(f"saved: {omni_dst}")
                 except Exception as e:
                     _dbg(f"save failed: {e}")
