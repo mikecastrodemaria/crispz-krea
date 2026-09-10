@@ -3,6 +3,56 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — Swap the text encoders
+
+Ported from crispz-klein 1.34.0, for the two encoders FLUX.1 carries. Models >
+Checkpoints gets two pickers: **Text encoder (T5)** for `text_encoder_2`, the T5-XXL
+whose `prompt_embeds` is the token sequence the transformer reads, and **Text encoder
+(CLIP)** for `text_encoder`, the CLIP-L that gives `pooled_prompt_embeds`. Default is the
+base repo's own, as before. Otherwise a transformers folder (config.json + safetensors)
+or a Hugging Face repo id (`owner/repo`, or `owner/repo/subfolder` when the weights sit
+in a sub-folder): an abliterated or Flan T5-XXL, a fine-tuned CLIP-L. Only the encoder
+changes: tokenizers, VAE and transformer still come from the base repo.
+
+Each candidate is checked **before** anything loads, against the base repo's config for
+the **same component**: same model type, same width, same layer count. On Krea-dev the
+T5 must be 4096 wide with 24 layers and the CLIP 768 wide with 12; a refusal names both
+numbers. A full `T5ForConditionalGeneration` folder is accepted, since the base's
+`T5EncoderModel` reads only its encoder. So is a full `CLIPModel` folder, the usual shape
+of a CLIP-L fine-tune: `CLIPTextModel` reads its text half. GGUF and single files are
+refused with the reason: ComfyUI's `t5xxl_fp16.safetensors` has no config.json, give the
+folder. The class comes from the base repo's `model_index.json`, the one diffusers would
+have used.
+
+Changing either encoder frees the pipeline (the encoder is passed to `from_pretrained`
+and loads with it) and clears the prompt-embedding cache. The cache key used to hold
+`id()` of the CLIP alone, while the T5 is what produces `prompt_embeds`; it now carries
+both encoder objects and both overrides. An encoder that turns out not to fit at load
+time is set aside with a log line and the base's own runs instead: a render is never
+lost to it. img2img and inpaint derive from the base with `from_pipe` and share its
+encoders (checked by a test).
+
+The image says which encoders ran. `text_encoder_t5` / `text_encoder_clip` in the
+metadata name them by folder name, never by path; `text_encoder_t5_not_applied` /
+`text_encoder_clip_not_applied` name one that was asked for and skipped. The A1111
+`parameters` line gains `Text encoder T5:` / `Text encoder CLIP:`. The queue snapshot
+keeps both, so a replayed job runs with its own encoders; a job queued before this
+change leaves them alone.
+
+Choosing **Default** saves an empty value in the preferences, and that empty value wins
+over one set in config.txt at the next start (an empty string used to count as absent);
+the environment variables still win over both.
+
+Config: `text_encoder_2`, `text_encoder`, `text_encoders_dir` (both lists scan its
+sub-folders and each keeps what fits its slot; default `text_encoders`, `text_encoder` or
+`clip` next to the checkpoints folder, the extra checkpoints folder, or their parent).
+Env `KREA_TEXT_ENCODER_2`, `KREA_TEXT_ENCODER`, `TEXT_ENCODERS_DIR`.
+
+Checked on GPU: each stock encoder, loaded through its picker from its own folder,
+renders the same image bit for bit (0/255 at 1024 x 1024, 8 steps, same seed, T5 then
+CLIP), and a CLIP offered as the T5 is refused with the reason. Regression tests in
+`tests/test_text_encoder.py`.
+
 ## Unreleased — The input image, named
 
 Ported from crispz-klein 1.32.0. An img2img, an inpaint or an edit is defined as much

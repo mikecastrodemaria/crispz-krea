@@ -682,6 +682,43 @@ def _apply_transformer_repo(repo):
             gr.update(value=st), gr.update(value=g), _perf_update(st, g))
 
 
+def _te_choices(component):
+    """Choix d'un dropdown 'Text encoder' (component = 'text_encoder_2' pour le T5,
+    'text_encoder' pour le CLIP): le defaut (valeur ''), les dossiers qui conviennent a
+    ce composant, et la valeur courante si elle vient d'ailleurs (chemin colle, repo HF)."""
+    ch = [(f"Default (base repo's own {cz_pipeline.TEXT_ENCODER_KIND[component]})", "")]
+    for p in cz_pipeline.list_text_encoders(component):
+        ch.append((cz_pipeline._encoder_label(p), p))
+    cur = cz_pipeline.TEXT_ENCODER.get(component, "")
+    if cur and cur not in [v for _lab, v in ch]:
+        ch.append((cz_pipeline._encoder_label(cur), cur))
+    return ch
+
+
+def _ui_set_text_encoder(component, src):
+    """Applique et memorise l'encodeur `component` choisi -- sauf s'il ne convient pas au
+    MEME composant du repo de base: refus nomme, rien de change, rien d'ecrit dans les
+    preferences."""
+    kind = cz_pipeline.TEXT_ENCODER_KIND[component]
+    src = (src or "").strip()
+    why = cz_pipeline._text_encoder_problem(src, component) if src else None
+    if why:
+        return f"⚠️ {kind} text encoder not applied: {why}."
+    changed = src != cz_pipeline.TEXT_ENCODER.get(component, "")
+    cz_pipeline.set_text_encoder(component, src)
+    _save_prefs_keys({component: src})
+    reload = " The model reloads on next run; the prompt cache was cleared." if changed else ""
+    if not src:
+        return f"{kind} text encoder: the base repo's own." + reload
+    return (f"{kind} text encoder: **{cz_pipeline._encoder_label(src)}**. Tokenizers, VAE "
+            f"and transformer stay the base repo's." + reload)
+
+
+def _ui_refresh_text_encoders():
+    return (gr.update(choices=_te_choices("text_encoder_2")),
+            gr.update(choices=_te_choices("text_encoder")))
+
+
 def _wild_sanitize(name):
     return "".join(c for c in (name or "").strip() if c.isalnum() or c in "_-")[:64]
 
@@ -1783,7 +1820,10 @@ def _q_model_state():
             "transformer": cz_pipeline.ZIMAGE_TRANSFORMER,
             "loras": list(cz_pipeline.LORAS),
             "sampler": cz_pipeline.SAMPLER,
-            "schedule": cz_pipeline.SCHEDULE}
+            "schedule": cz_pipeline.SCHEDULE,
+            # encodeurs texte: clef = composant diffusers = clef de config
+            "text_encoder_2": cz_pipeline.TEXT_ENCODER.get("text_encoder_2", ""),
+            "text_encoder": cz_pipeline.TEXT_ENCODER.get("text_encoder", "")}
 
 
 def _q_restore_model_state(ms):
@@ -1792,6 +1832,10 @@ def _q_restore_model_state(ms):
     if ms.get("base_repo"):
         set_zimage_model(ms["base_repo"])
     set_zimage_transformer(ms.get("transformer") or "")
+    # Encodeurs texte (T5, CLIP): clef absente = snapshot d'avant l'option -> on n'y touche pas.
+    for comp in cz_pipeline.TEXT_ENCODER_COMPONENTS:
+        if comp in ms:
+            cz_pipeline.set_text_encoder(comp, ms.get(comp) or "")
     set_loras([(p, w) for p, w in (ms.get("loras") or [])])
     set_sampler(ms.get("sampler") or "euler")
     set_schedule(ms.get("schedule") or "sgm_uniform")
@@ -3479,6 +3523,27 @@ def build_ui():
                                 with gr.Row():
                                     transformer_apply_btn = gr.Button("Apply override", size="sm",
                                                                       variant="secondary")
+                            with gr.Column():
+                                te_t5_dd = gr.Dropdown(
+                                    choices=_te_choices("text_encoder_2"),
+                                    value=cz_pipeline.TEXT_ENCODER.get("text_encoder_2", ""),
+                                    allow_custom_value=True, label="Text encoder (T5)",
+                                    info="Default: the base repo's own T5-XXL, which carries the "
+                                         "prompt. Or a transformers folder (config.json + weights) "
+                                         "or HF repo of the SAME size (4096 wide, 24 layers), e.g. "
+                                         "an abliterated or Flan T5-XXL. Pick or paste a path; "
+                                         "changing it reloads the model and clears the prompt cache.")
+                                te_clip_dd = gr.Dropdown(
+                                    choices=_te_choices("text_encoder"),
+                                    value=cz_pipeline.TEXT_ENCODER.get("text_encoder", ""),
+                                    allow_custom_value=True, label="Text encoder (CLIP)",
+                                    info="Default: the base repo's own CLIP-L, whose pooled vector "
+                                         "steers the whole image. Or a CLIP text model, or a full "
+                                         "CLIP model (only its text half is read), of the SAME size "
+                                         "(768 wide, 12 layers).")
+                                with gr.Row():
+                                    te_refresh_btn = gr.Button("Refresh encoders", size="sm", scale=1)
+                                te_status = gr.Markdown("")
 
                         with gr.Accordion("\U0001F9E9 LoRA (combinable)", open=False):
                             lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
@@ -3716,6 +3781,9 @@ def build_ui():
             .then(set_schedule, [schedule_dd], None)
         transformer_apply_btn.click(_apply_transformer_repo, [transformer_tb],
                                     [ckpt_status, gen_steps, guidance, performance])
+        te_t5_dd.change(lambda s: _ui_set_text_encoder("text_encoder_2", s), [te_t5_dd], [te_status])
+        te_clip_dd.change(lambda s: _ui_set_text_encoder("text_encoder", s), [te_clip_dd], [te_status])
+        te_refresh_btn.click(_ui_refresh_text_encoders, None, [te_t5_dd, te_clip_dd])
         lora_refresh_btn.click(_refresh_loras, [lora_dir_tb], lora_dds + [lora_status])
         # slots entrelaces: dd1, lw1, dd2, lw2, ... (attendu par _apply_loras/_ui_loras_apply)
         _lora_slots = [c for _pair in zip(lora_dds, lora_lws) for c in _pair]

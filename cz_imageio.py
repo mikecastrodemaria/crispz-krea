@@ -135,6 +135,10 @@ def _a1111_parameters(meta):
         parts.append(f"Loras: {', '.join(str(v) for v in meta['loras'])}")
     if meta.get("base_repo"):
         parts.append(f"Base: {meta['base_repo']}")
+    # Encodeurs texte de remplacement: meme prompt, meme seed, autre encodeur = autre image.
+    for field, kind in (("text_encoder_t5", "T5"), ("text_encoder_clip", "CLIP")):
+        if meta.get(field):
+            parts.append(f"Text encoder {kind}: {meta[field]}")
     if parts:
         out.append(", ".join(parts))
     return "\n".join(out)

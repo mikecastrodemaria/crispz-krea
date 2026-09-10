@@ -63,6 +63,42 @@ if _is_single_file(_zmodel):
 else:
     BASE_REPO = _zmodel
 
+# Encodeurs texte de remplacement (Models > Checkpoints > Text encoder T5 / CLIP). FLUX.1
+# en a DEUX, chacun son composant diffusers -- qui sert aussi de clef de config/prefs:
+#   text_encoder_2 = T5-XXL (T5EncoderModel) -> prompt_embeds, la sequence que lit le
+#                    transformer: c'est lui qui porte le prompt;
+#   text_encoder   = CLIP-L (CLIPTextModel)  -> pooled_prompt_embeds, un vecteur global.
+# Vide = celui du repo de base, comme avant. Sinon un DOSSIER au format transformers
+# (config.json + poids) ou un repo HF ('owner/repo', 'owner/repo/sous-dossier') -- ex. un
+# T5-XXL "abliterated" ou Flan de meme taille. Seul l'encodeur change: tokenizers, VAE et
+# transformer restent ceux du repo de base.
+TEXT_ENCODER_KIND = {"text_encoder_2": "T5", "text_encoder": "CLIP"}
+TEXT_ENCODER_COMPONENTS = tuple(TEXT_ENCODER_KIND)
+
+
+def _cfg_str(key, env=None):
+    """Valeur texte d'un reglage: variable d'env (si non vide), puis preferences.json,
+    puis config. Une cle PRESENTE dans les preferences gagne meme vide: c'est le choix
+    "Default" fait dans l'UI, qu'une valeur de config.txt ne doit pas defaire au
+    redemarrage (un "" passait pour absent)."""
+    v = os.environ.get(env) if env else None
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    if key in _prefs:
+        v = _prefs.get(key)
+        return v.strip() if isinstance(v, str) else ""
+    v = CONFIG.get(key)
+    return v.strip() if isinstance(v, str) else ""
+
+
+TEXT_ENCODER = {"text_encoder_2": _cfg_str("text_encoder_2", "KREA_TEXT_ENCODER_2"),
+                "text_encoder": _cfg_str("text_encoder", "KREA_TEXT_ENCODER")}
+# Ceux qui sont REELLEMENT charges ('' = celui du repo de base). Distinct de TEXT_ENCODER:
+# un encodeur qui ne convient pas au repo courant est ecarte au chargement, et les
+# metadonnees disent ce qui a tourne, pas ce qui etait demande.
+_TEXT_ENCODER_ACTIVE = dict.fromkeys(TEXT_ENCODER_COMPONENTS, "")
+TEXT_ENCODERS_DIR = _cfg_str("text_encoders_dir", "TEXT_ENCODERS_DIR")
+
 # Dossiers de modeles Z-Image: checkpoints single-file a switcher + LoRA a appliquer.
 CHECKPOINTS_DIR = (os.environ.get("CHECKPOINTS_DIR") or _prefs.get("checkpoints_dir")
                    or CONFIG.get("checkpoints_dir") or os.path.join(HERE, "checkpoints"))
@@ -287,7 +323,12 @@ def _cached_prompt_embeds(pipe, prompt, kw):
             return None
         # Les LoRA font partie de la clef: certaines touchent l'encodeur de texte,
         # et un embedding calcule sans elles serait faux.
-        key = (BASE_REPO, id(enc), prompt, kw.get("max_sequence_length"),
+        # Les DEUX encodeurs aussi. id(pipe.text_encoder) seul ne voyait que le CLIP (le
+        # pooled), alors que c'est le T5 qui produit prompt_embeds; et CPython recycle
+        # l'id d'un objet libere -- d'ou l'encodeur de remplacement actif de chacun.
+        key = (BASE_REPO, tuple(_TEXT_ENCODER_ACTIVE.get(c, "") for c in TEXT_ENCODER_COMPONENTS),
+               id(enc), id(getattr(pipe, "text_encoder_2", None)),
+               prompt, kw.get("max_sequence_length"),
                tuple(sorted((p, float(w)) for p, w in _APPLIED_LORAS)))
         hit = _EMBED_CACHE.get(key)
         if hit is None:
@@ -541,6 +582,262 @@ def set_zimage_transformer(path):
         ZIMAGE_TRANSFORMER = path
         _log(f"Flux transformer -> {path or '(repo de base)'} "
              "-> transformer swap on next run (base components kept)")
+
+
+# --- Encodeurs texte de remplacement ---------------------------------------------------
+# Le transformer FLUX.1 lit la sequence du T5 par une projection large de d_model
+# (context_embedder) et le vecteur poole du CLIP par une autre (pooled_projection_dim).
+# Un encodeur ne convient donc que s'il a la meme famille, la meme largeur et le meme
+# nombre de couches que le MEME composant du repo de base. On le verifie a la config,
+# AVANT de lire 9 Go de T5.
+_SINGLE_FILE_EXTS = (".safetensors", ".ckpt", ".pt", ".sft", ".gguf")
+
+
+def _looks_single_file(p):
+    """Vrai si le NOM est celui d'un fichier de poids, qu'il existe ou non: un chemin
+    colle depuis une autre machine doit etre refuse pour la bonne raison
+    (cz_core._is_single_file exige que le fichier existe)."""
+    return bool(p) and str(p).lower().endswith(_SINGLE_FILE_EXTS)
+
+
+def _looks_local(src):
+    """Un chemin (de ce poste ou d'un autre), pas un id de repo HF."""
+    return (os.path.isabs(src) or os.path.exists(src) or "\\" in src
+            or src.startswith(("/", "~", ".")) or src[1:2] == ":")
+
+
+def _split_hf_src(src):
+    """'owner/repo/sous/dossier' -> ('owner/repo', 'sous/dossier'). Les poids d'un
+    encodeur publie sur HF sont souvent dans un sous-dossier du repo."""
+    parts = [p for p in str(src).replace("\\", "/").split("/") if p]
+    if len(parts) > 2:
+        return "/".join(parts[:2]), "/".join(parts[2:])
+    return str(src), None
+
+
+def _enc_dims(cfg):
+    """(largeur, couches, famille) d'une config transformers. Un CLIPModel complet range
+    la partie texte sous 'text_config'; T5 dit d_model / num_layers."""
+    c = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
+    h = c.get("hidden_size") or c.get("d_model")
+    n = c.get("num_hidden_layers") or c.get("num_layers")
+    return (int(h) if h else None, int(n) if n else None, cfg.get("model_type"))
+
+
+def _family(model_type):
+    """Famille d'un model_type. 'clip_text_model' (le CLIPTextModel du repo) et 'clip'
+    (un CLIPModel complet, texte + vision) sont la meme: transformers charge la partie
+    texte d'un CLIPModel avec CLIPTextModel, via son text_config."""
+    t = str(model_type or "").lower()
+    return t[:-len("_text_model")] if t.endswith("_text_model") else t
+
+
+def _base_text_encoder_config(base=None, component="text_encoder_2", local_only=False):
+    """config.json de l'encodeur `component` du repo de base, ou None si illisible.
+    local_only: jamais de reseau (les listes de l'onglet Models se construisent au
+    demarrage, meme hors ligne)."""
+    base = (base or BASE_REPO or "").strip()
+    try:
+        cfg = os.path.join(base, component, "config.json")
+        if not os.path.isfile(cfg):
+            from huggingface_hub import hf_hub_download
+            try:
+                cfg = hf_hub_download(base, f"{component}/config.json", local_files_only=True)
+            except Exception:
+                if local_only:
+                    return None
+                cfg = hf_hub_download(base, f"{component}/config.json")
+        with open(cfg, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        _dbg(f"cannot read {base}'s {component} config: {e}")
+        return None
+
+
+def _text_encoder_source(src, component="text_encoder_2"):
+    """Localise l'encodeur `src`: (config, dossier ou repo, sous-dossier) ou None.
+    Dossier local: config.json a la racine ou dans <component>/ (copie d'un repo
+    diffusers: le T5 y est dans text_encoder_2/, le CLIP dans text_encoder/). Repo HF:
+    idem, ou le sous-dossier nomme dans l'id."""
+    src = (src or "").strip()
+    if not src:
+        return None
+    subs = (None, component)
+    if os.path.isdir(src):
+        for sub in subs:
+            p = os.path.join(src, sub, "config.json") if sub else os.path.join(src, "config.json")
+            if os.path.isfile(p):
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        return json.load(f), src, sub
+                except Exception:
+                    return None
+        return None
+    if _looks_local(src) or _looks_single_file(src):
+        return None
+    repo, sub0 = _split_hf_src(src)
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception:
+        return None
+    for sub in ([sub0] if sub0 else subs):
+        try:
+            p = hf_hub_download(repo, f"{sub}/config.json" if sub else "config.json")
+            with open(p, encoding="utf-8") as f:
+                return json.load(f), repo, sub
+        except Exception:
+            continue
+    return None
+
+
+def _encoder_label(src):
+    """Nom lisible d'un encodeur: le NOM du dossier -- jamais le chemin, qui finirait
+    dans les PNG partages avec le nom de la session Windows -- ou l'id du repo HF."""
+    src = (src or "").strip()
+    if not src:
+        return ""
+    if _looks_local(src):
+        parts = [p for p in src.replace("\\", "/").split("/") if p]
+        if len(parts) >= 2 and parts[-1] in TEXT_ENCODER_COMPONENTS:
+            return parts[-2]
+        return parts[-1] if parts else src
+    return src
+
+
+def _text_encoder_problem(src, component="text_encoder_2", base=None):
+    """Raison de refuser `src` comme encodeur `component` du repo `base`, ou None s'il
+    convient. La reference est la config du MEME composant dans le repo de base."""
+    src = (src or "").strip()
+    if not src:
+        return None
+    if src.lower().endswith(".gguf"):
+        return ("a GGUF text encoder is a ComfyUI / llama.cpp file; this app loads the "
+                "transformers folder (config.json + .safetensors)")
+    if os.path.isfile(src) or _looks_single_file(src):
+        return ("a single file carries no config.json; point to the FOLDER that holds "
+                "config.json and the weights")
+    found = _text_encoder_source(src, component)
+    if found is None:
+        return (f"no config.json found, neither at its root nor in {component}/"
+                if os.path.isdir(src) else
+                "neither a folder on this machine nor a readable Hugging Face repo")
+    ref_cfg = _base_text_encoder_config(base, component)
+    if ref_cfg is None:
+        return None                      # rien a comparer: le chargement tranchera
+    (h, n, t), (rh, rn, rt) = _enc_dims(found[0]), _enc_dims(ref_cfg)
+    b, kind = (base or BASE_REPO), TEXT_ENCODER_KIND.get(component, component)
+    if t and rt and _family(t) != _family(rt):
+        return f"a '{t}' model, and {b}'s {kind} encoder ({component}) is '{rt}'"
+    if h and rh and h != rh:
+        return (f"hidden size {h}, and {b}'s {kind} encoder is {rh} wide: the transformer "
+                f"cannot read its embeddings")
+    if n and rn and n != rn:
+        return f"{n} layers, and {b}'s {kind} encoder has {rn}"
+    return None
+
+
+def _encoder_class(base=None, component="text_encoder_2"):
+    """Classe transformers de l'encodeur `component`, lue dans le model_index.json du repo
+    de base (T5EncoderModel / CLIPTextModel ici): celle que diffusers aurait chargee. Un
+    dossier T5ForConditionalGeneration complet se charge avec T5EncoderModel, qui n'en
+    lit que l'encodeur."""
+    base = (base or BASE_REPO or "").strip()
+    try:
+        p = os.path.join(base, "model_index.json")
+        if not os.path.isfile(p):
+            from huggingface_hub import hf_hub_download
+            try:
+                p = hf_hub_download(base, "model_index.json", local_files_only=True)
+            except Exception:
+                p = hf_hub_download(base, "model_index.json")
+        with open(p, encoding="utf-8") as f:
+            lib, cls = json.load(f)[component]
+        import importlib
+        return getattr(importlib.import_module(lib), cls)
+    except Exception as e:
+        raise RuntimeError(f"cannot tell which class {base}'s {component} uses "
+                           f"({type(e).__name__}: {e})") from e
+
+
+def _load_text_encoder(src, component="text_encoder_2", base=None):
+    """Charge l'encodeur `src` en DTYPE, avec la classe du composant du repo de base."""
+    found = _text_encoder_source(src, component)
+    if found is None:
+        raise RuntimeError(f"{src}: no config.json")
+    _cfg, where, sub = found
+    kw = {"torch_dtype": DTYPE}
+    if sub:
+        kw["subfolder"] = sub
+    return _encoder_class(base, component).from_pretrained(where, **kw)
+
+
+def list_text_encoders(component=None):
+    """Dossiers d'encodeur proposes dans l'onglet Models: les sous-dossiers a config.json
+    (racine, ou <component>/) de `text_encoders_dir`, ou de text_encoders / text_encoder /
+    clip a cote du dossier des checkpoints (principal ou extra) ou de son parent
+    (conventions ComfyUI et Forge). Avec `component`, un dossier d'une autre famille que
+    ce composant du repo de base est ecarte -- le meme dossier sert aux deux listes -- si
+    la config du repo se lit sans reseau; sinon tout est propose, le choix tranchera."""
+    roots = [TEXT_ENCODERS_DIR] if TEXT_ENCODERS_DIR else []
+    for ck in (CHECKPOINTS_DIR, CHECKPOINTS_EXTRA_DIR):
+        if not ck:
+            continue
+        here = os.path.abspath(ck)
+        for up in (os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+            roots += [os.path.join(up, n) for n in ("text_encoders", "text_encoder", "clip")]
+    subs = (None, component) if component else (None,) + TEXT_ENCODER_COMPONENTS
+    ref = None
+    if component:
+        ref_cfg = _base_text_encoder_config(component=component, local_only=True)
+        ref = _family(ref_cfg.get("model_type")) if ref_cfg else None
+    out, seen = [], set()
+    for r in roots:
+        if os.path.normcase(os.path.abspath(r)) in seen:
+            continue
+        seen.add(os.path.normcase(os.path.abspath(r)))
+        try:
+            names = sorted(os.listdir(r))
+        except OSError:
+            continue
+        for d in names:
+            p = os.path.join(r, d)
+            if p in out or not os.path.isdir(p):
+                continue
+            cfg = None
+            for s in subs:
+                q = os.path.join(p, s, "config.json") if s else os.path.join(p, "config.json")
+                if os.path.isfile(q):
+                    cfg = q
+                    break
+            if not cfg:
+                continue
+            if ref:
+                try:
+                    with open(cfg, encoding="utf-8") as f:
+                        t = json.load(f).get("model_type")
+                except Exception:
+                    t = None
+                if t and _family(t) != ref:
+                    continue
+            out.append(p)
+    return out
+
+
+def set_text_encoder(component, src):
+    """Choisit l'encodeur `component` ('text_encoder_2' = T5, 'text_encoder' = CLIP;
+    src '' = celui du repo de base). Un changement LIBERE le pipeline -- l'encodeur se
+    charge avec lui, sans echange a chaud sous les hooks d'offload -- et free_vram vide
+    le cache d'embeddings, calcule par l'ancien."""
+    if component not in TEXT_ENCODER_KIND:
+        raise ValueError(f"unknown text encoder component {component!r} "
+                         f"(expected one of: {', '.join(TEXT_ENCODER_COMPONENTS)})")
+    src = (src or "").strip()
+    if src == TEXT_ENCODER.get(component, ""):
+        return
+    TEXT_ENCODER[component] = src
+    free_vram()
+    _log(f"{TEXT_ENCODER_KIND[component]} text encoder -> "
+         f"{_encoder_label(src) or '(base repo)'} -> full reload on next run")
 
 
 def _safetensors_header(path):
@@ -1139,11 +1436,12 @@ def set_offload_mode(mode):
 def free_vram():
     """Libere le pipeline de base + les pipelines derives et rend la VRAM
     (palier 3: unload sur inactivite ou endpoint /unload). Rechargement paresseux."""
-    global _BASE_PIPE, _DERIVED, _LOADED_KEY, _APPLIED_LORAS
+    global _BASE_PIPE, _DERIVED, _LOADED_KEY, _APPLIED_LORAS, _TEXT_ENCODER_ACTIVE
     _BASE_PIPE = None
     _DERIVED = {}
     _LOADED_KEY = None
     _APPLIED_LORAS = []      # plus de pipe -> plus d'adaptateur pose
+    _TEXT_ENCODER_ACTIVE = dict.fromkeys(TEXT_ENCODER_COMPONENTS, "")  # ... ni d'encodeur de remplacement
     _embed_cache_clear(" (VRAM freed)")
     gc.collect()
     if DEVICE == "cuda":
@@ -1503,6 +1801,7 @@ def _ensure_base():
       - LoRA differentes            -> _apply_loras (adaptateurs PEFT seuls)
       - transformer different, meme repo de base + offload -> _swap_transformer."""
     global _BASE_PIPE, _DERIVED, _LOADED_KEY, _BASE_SCHED_CONFIG, _APPLIED_LORAS
+    global _TEXT_ENCODER_ACTIVE
     key = (BASE_REPO, ZIMAGE_TRANSFORMER, OFFLOAD_MODE)
     _dbg(f"_ensure_base key={key} cached={_LOADED_KEY}")
     if _BASE_PIPE is not None and _LOADED_KEY == key:
@@ -1525,10 +1824,38 @@ def _ensure_base():
     kwargs = {}
     if ZIMAGE_TRANSFORMER:
         kwargs["transformer"] = _load_transformer()
+    # Encodeurs de remplacement (T5 et/ou CLIP): verifies a la config contre le MEME
+    # composant du repo de base, charges avec sa classe, puis passes a from_pretrained
+    # (qui ne charge alors pas le sien). Un encodeur qui ne convient pas (repo de base
+    # change depuis le choix, dossier illisible, chargement en echec) est ecarte AVEC
+    # une ligne de log: celui du repo tourne a sa place, les metadonnees le disent, et
+    # la generation n'est jamais perdue pour autant.
+    active = dict.fromkeys(TEXT_ENCODER_COMPONENTS, "")
+    for comp in TEXT_ENCODER_COMPONENTS:
+        src = TEXT_ENCODER.get(comp) or ""
+        if not src:
+            continue
+        kind, label = TEXT_ENCODER_KIND[comp], _encoder_label(src)
+        try:
+            why = _text_encoder_problem(src, comp)
+            if not why:
+                kwargs[comp] = _load_monitor(f"{kind} text encoder {label}",
+                                             lambda s=src, c=comp: _load_text_encoder(s, c))
+                active[comp] = src
+        except Exception as e:
+            why = f"it failed to load ({type(e).__name__}: {e})"
+        if why:
+            _log(f"{kind} text encoder {label} NOT used: {why}. {BASE_REPO}'s own {comp} "
+                 f"runs instead; the image metadata says so "
+                 f"(text_encoder_{kind.lower()}_not_applied).")
+        else:
+            _log(f"{kind} text encoder: {label} replaces {BASE_REPO}'s own {comp} "
+                 f"(tokenizers, VAE and transformer unchanged)")
     _log(f"loading FLUX.1 Krea base: {BASE_REPO} (offload={OFFLOAD_MODE}, dtype=bf16) ... "
          "repo GATED: needs HF login (HF_TOKEN) on first download, then cached")
     pipe = _load_monitor(f"FLUX.1 Krea base {BASE_REPO}",
                          lambda: FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs))
+    _TEXT_ENCODER_ACTIVE = active          # ce qui tourne REELLEMENT (metadonnees, cache)
     # Capture le config natif (flow-matching) du scheduler -> base pour construire les
     # autres samplers (euler/dpm2a/dpmpp2m) sans perdre shift/flow params.
     try:
@@ -2300,6 +2627,16 @@ def _gen_meta(mode, prompt, negative="", seed=None, steps=None, guidance=None,
     # reproductible depuis son propre fichier.
     if ZIMAGE_TRANSFORMER:
         m["base_repo"] = BASE_REPO
+    # Encodeurs de remplacement: ceux qui ont REELLEMENT tourne, par leur nom de dossier,
+    # un champ par composant (text_encoder_t5 / text_encoder_clip). Demande mais ecarte
+    # au chargement = l'image vient de l'encodeur du repo de base, et on nomme a part
+    # celui qui n'a pas servi.
+    for comp, kind in TEXT_ENCODER_KIND.items():
+        field = f"text_encoder_{kind.lower()}"
+        if _TEXT_ENCODER_ACTIVE.get(comp):
+            m[field] = _encoder_label(_TEXT_ENCODER_ACTIVE[comp])
+        elif TEXT_ENCODER.get(comp):
+            m[field + "_not_applied"] = _encoder_label(TEXT_ENCODER[comp])
     # Ce qui a REELLEMENT ete pose, pas ce qui a ete demande: une LoRA peut etre
     # ecartee en route (fichier absent, format refuse), et signer une image avec une
     # LoRA qu'elle ne porte pas est un mensonge tranquille -- le pire genre.
