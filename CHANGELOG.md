@@ -3,6 +3,17 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
+## Unreleased — The text-encoder lists show the Hugging Face cache
+
+Ported from crispz-klein 1.35.1. An encoder downloaded from Hugging Face lives in the HF
+cache, and the two Text encoder lists (T5 and CLIP) only scanned `text_encoders` folders.
+Each list now also offers the encoders of the HF cache that fit **its** component (same
+family, width and layer count as the base repo's; a full CLIP folder fits the CLIP list),
+marked *(HF cache)*, with their Hugging Face id as the value: readable in the image
+metadata. Diffusers pipelines, configs without weights and configs without a size are
+left out. The lists follow a model change, and an id is looked up in the cache first, so
+it also works offline. Regression test in `tests/test_text_encoder.py`.
+
 ## Unreleased — The boot check offers the GitHub update
 
 Ported from crispz-klein 1.35.0. `boot_check.bat` (and its `_lan` / `_web` wrappers) now looks for new commits on

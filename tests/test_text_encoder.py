@@ -507,6 +507,54 @@ def test_default_picked_in_the_ui_survives_a_restart():
     print("OK test_default_picked_in_the_ui_survives_a_restart")
 
 
+def test_compatible_encoders_in_the_hf_cache_are_listed_per_component():
+    """Un encodeur telecharge depuis HF vit dans le cache HF: la liste de SON composant doit
+    le montrer. Pas un pipeline diffusers, pas une config sans poids, pas une autre taille,
+    pas une config sans taille (un VAE, un upscaler), et un CLIP complet vaut pour le CLIP."""
+    import json as _json
+    import os as _os
+    import tempfile as _tempfile
+    t5 = {"model_type": "t5", "d_model": 64, "num_layers": 2}
+    clip_text = {"model_type": "clip_text_model", "hidden_size": 32, "num_hidden_layers": 3}
+    root = _tempfile.mkdtemp(prefix="hfcache_")
+
+    def snap(repo, sub=None, cfg=t5, weights=True, pipeline=False):
+        d = _os.path.join(root, "models--" + repo.replace("/", "--"), "snapshots", "r1")
+        p = _os.path.join(d, sub) if sub else d
+        _os.makedirs(p, exist_ok=True)
+        with open(_os.path.join(p, "config.json"), "w", encoding="utf-8") as f:
+            _json.dump(cfg, f)
+        if weights:
+            open(_os.path.join(p, "model.safetensors"), "wb").close()
+        if pipeline:
+            with open(_os.path.join(d, "model_index.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+
+    snap("a/t5-fits")
+    snap("b/t5-in-sub", sub="enc")
+    snap("c/t5-wider", cfg={"model_type": "t5", "d_model": 128, "num_layers": 2})
+    snap("d/pipeline", sub="text_encoder_2", pipeline=True)
+    snap("e/config-only", weights=False)
+    snap("f/no-shape", cfg={"_class_name": "AutoencoderKL"})
+    snap("g/full-clip", cfg={"model_type": "clip", "text_config": {
+        "model_type": "clip_text_model", "hidden_size": 32, "num_hidden_layers": 3}})
+    refs = {"text_encoder_2": t5, "text_encoder": clip_text}
+    old = (P._hf_cache_dir, P._base_text_encoder_config)
+    try:
+        P._hf_cache_dir = lambda: root
+        P._base_text_encoder_config = lambda base=None, component="text_encoder_2", **k: refs[component]
+        got_t5 = [v for _l, v in P.list_cached_text_encoders("text_encoder_2")]
+        got_clip = [v for _l, v in P.list_cached_text_encoders("text_encoder")]
+        import cz_ui as U
+        choices = [v for _l, v in U._te_choices("text_encoder_2")]
+    finally:
+        P._hf_cache_dir, P._base_text_encoder_config = old
+    assert got_t5 == ["a/t5-fits", "b/t5-in-sub/enc"], got_t5
+    assert got_clip == ["g/full-clip"], got_clip
+    assert all(v in choices for v in got_t5), choices
+    print("OK test_compatible_encoders_in_the_hf_cache_are_listed_per_component")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -689,6 +689,10 @@ def _te_choices(component):
     ch = [(f"Default (base repo's own {cz_pipeline.TEXT_ENCODER_KIND[component]})", "")]
     for p in cz_pipeline.list_text_encoders(component):
         ch.append((cz_pipeline._encoder_label(p), p))
+    # ... et ceux du cache Hugging Face qui conviennent a ce composant (id HF en valeur).
+    for label, hid in cz_pipeline.list_cached_text_encoders(component):
+        if hid not in [v for _lab, v in ch]:
+            ch.append((f"{label} (HF cache)", hid))
     cur = cz_pipeline.TEXT_ENCODER.get(component, "")
     if cur and cur not in [v for _lab, v in ch]:
         ch.append((cz_pipeline._encoder_label(cur), cur))
@@ -3772,7 +3776,8 @@ def build_ui():
                               [wild_dd, wild_status, wild_new_name])
         ckpt_refresh_btn.click(_refresh_checkpoints, [ckpt_dir_tb, ckpt_extra_dir_tb],
                                [ckpt_dd, ckpt_status, preset_dd])
-        ckpt_dd.change(_apply_checkpoint, [ckpt_dd], [ckpt_status, gen_steps, guidance, performance])
+        ckpt_dd.change(_apply_checkpoint, [ckpt_dd], [ckpt_status, gen_steps, guidance, performance]) \
+            .then(_ui_refresh_text_encoders, None, [te_t5_dd, te_clip_dd])
         # Reglages communautaires CivitAI -> steps/CFG/sampler/schedule (les updates
         # programmatiques ne declenchent pas .change, d'ou les .then explicites).
         civitai_reco_btn.click(_ui_civitai_reco, [ckpt_dd],
