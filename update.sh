@@ -47,12 +47,12 @@ echo
 if [ "$DOPULL" = "1" ]; then
   if ! command -v git >/dev/null 2>&1; then
     echo "[AVERT] git introuvable -> pull saute."
-  elif [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    echo "[ATTENTION] Modifications locales non commitees:"
-    git status --short
+  elif ! "$RUNPY" _update_check.py --guard; then
+    # Bloque seulement si les commits a recuperer touchent un fichier modifie ici ou
+    # ajoutent un fichier deja present hors de git (cf. _update_check.py).
     echo
-    echo "  git pull risquerait un conflit. Commit / stash d'abord, ou relance"
-    echo "  avec --no-pull pour ne resynchroniser que les dependances."
+    echo "  Commit / stash ces fichiers d'abord, ou relance avec --no-pull pour ne"
+    echo "  resynchroniser que les dependances."
     exit 1
   else
     echo "Recuperation des commits (git pull)..."
@@ -102,8 +102,8 @@ if [ "$HW" = "3" ]; then
   echo "[BLOQUANT] torch ne supporte pas cette carte (voir le correctif ci-dessus)."
   exit 3
 fi
-"$RUNPY" -c "from diffusers import ZImagePipeline, ZImageImg2ImgPipeline; print('diffusers: ZImage pipelines OK')" || {
-  echo "[ERREUR] diffusers ne fournit plus les pipelines ZImage."
+"$RUNPY" -c "from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxInpaintPipeline; print('diffusers: FLUX.1 pipelines OK')" || {
+  echo "[ERREUR] diffusers ne fournit plus les pipelines FLUX.1."
   echo "  Relance install.sh, ou restaure: $RUNPY -m pip install -r $SNAP"; exit 1; }
 "$RUNPY" -c "import cz_ui; print('app: imports OK')" || {
   echo "[ERREUR] l'application ne s'importe plus."; exit 1; }
