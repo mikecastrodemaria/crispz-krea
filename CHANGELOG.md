@@ -3,7 +3,22 @@
 All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
-## Unreleased — The text-encoder lists show the Hugging Face cache
+
+## 1.17.0 — 2026-09-14 — Release: FLUX parity pass — AI provenance, face/hand detailers, scaled FP8/INT8 checkpoints, text-encoder cache
+
+Consolidates everything since **1.16.0**, largely porting the crispz-studio pass onto
+the FLUX pipeline. **AI provenance**: C2PA reading + an invisible **TrustMark** watermark
+(EU AI Act art. 50). The **face & hand detailers** are brought up to crispz-studio level,
+and **FP8/INT8 "scaled" FLUX** checkpoints become loadable (with a GGUF layout guard)
+behind a **dequant disk cache**. The two **text-encoder** lists (T5 and CLIP) surface the
+Hugging Face cache and can be swapped, the encoded prompt is cached to stop moving the
+text encoder on every call, the **boot check** offers a GitHub update, and the **queue**
+gains persistence and a soft ⏸ pause. Plus an XYZ full-prompt A/B axis, an "Extend
+(outpaint)" ratio mode, CLI parity flags, a thumbnail cache, cleaner metadata and a named
+input image, the app finally calling itself by its own name, and correctness fixes
+(scheduler concurrency, ConvRot INT8, LoRA-as-checkpoint). Details in the sections below.
+
+### The text-encoder lists show the Hugging Face cache
 
 Ported from crispz-klein 1.35.1. An encoder downloaded from Hugging Face lives in the HF
 cache, and the two Text encoder lists (T5 and CLIP) only scanned `text_encoders` folders.
@@ -14,7 +29,7 @@ metadata. Diffusers pipelines, configs without weights and configs without a siz
 left out. The lists follow a model change, and an id is looked up in the cache first, so
 it also works offline. Regression test in `tests/test_text_encoder.py`.
 
-## Unreleased — The boot check offers the GitHub update
+### The boot check offers the GitHub update
 
 Ported from crispz-klein 1.35.0. `boot_check.bat` (and its `_lan` / `_web` wrappers) now looks for new commits on
 GitHub before the diagnostics, and offers them: step `[MAJ]` lists up to eight of them and
@@ -41,7 +56,7 @@ code, so the boot can tell a finished update from a failed one.
 
 Regression tests in `tests/test_update_check.py`, on real temporary git repositories.
 
-## Unreleased — FP8 weights stored at scale, read as such
+### FP8 weights stored at scale, read as such
 
 Ported from crispz-klein 1.34.1. A FLUX.2 file of the library
 (`kleinFinalcutFP16FP8_comfyQuant`) stores its FP8 weights **already at scale** and still
@@ -56,7 +71,7 @@ every regular cache keeps its key, and writing the new cache deletes the stale o
 No FLUX.1 file of the library has this layout today: the guard is there for the next
 one. Regression tests in `tests/test_prescaled_fp8.py`.
 
-## Unreleased — Swap the text encoders
+### Swap the text encoders
 
 Ported from crispz-klein 1.34.0, for the two encoders FLUX.1 carries. Models >
 Checkpoints gets two pickers: **Text encoder (T5)** for `text_encoder_2`, the T5-XXL
@@ -106,7 +121,7 @@ renders the same image bit for bit (0/255 at 1024 x 1024, 8 steps, same seed, T5
 CLIP), and a CLIP offered as the T5 is refused with the reason. Regression tests in
 `tests/test_text_encoder.py`.
 
-## Unreleased — The input image, named
+### The input image, named
 
 Ported from crispz-klein 1.32.0. An img2img, an inpaint or an edit is defined as much
 by its input as by its prompt, and one of the four save paths recorded it: the batch
@@ -126,7 +141,7 @@ written: a missing field beats an invented one.
 
 Regression tests in `tests/test_gen_meta.py`.
 
-## Unreleased — Metadata that describes the image, not the intention
+### Metadata that describes the image, not the intention
 
 Two holes, ported from crispz-klein 1.31.0, both the same kind: an image that cannot be
 reproduced from its own file, or worse, one that claims something untrue.
@@ -147,7 +162,7 @@ actually read, where no LoRA had ever appeared.
 
 Regression tests in `tests/test_gen_meta.py`.
 
-## Unreleased — cache the encoded prompt: stop moving the text encoder per call
+### cache the encoded prompt: stop moving the text encoder per call
 
 Encoding a prompt walks the text encoder onto the GPU. Under
 `default_cpu_offload: "model"` — which this fork ships — that transfer is paid on
@@ -172,7 +187,7 @@ passing the prompt through: a cache must never cost a render.
 
 Regression test: `tests/test_prompt_embed_cache.py`.
 
-## Unreleased — the Models tab was empty on any install that keeps models elsewhere
+### the Models tab was empty on any install that keeps models elsewhere
 
 The Asset Browser catalogue walked only the **main** checkpoints folder and
 matched only `.safetensors`. An install whose models live in the *extra* folder —
@@ -191,7 +206,7 @@ crispz-studio 39, crispz-qwen-edit 10, crispz-krea2 16.
 Found on crispz-klein (0 → 22). Regression test:
 `tests/test_asset_browser_dirs.py`.
 
-## Unreleased — the app finally calls itself by its own name
+### the app finally calls itself by its own name
 
 Everything below the `TOOL` constant still said **crispz-studio**: the README
 title and its blockquote (which also advertised *Z-Image* — the parent's model,
@@ -208,7 +223,7 @@ stays untouched: `FORK.md`, "ported from crispz-studio", "measured on
 crispz-studio", the family enumerations in `cz_protocol.py` and `install.sh`, and
 the cross-references telling you to pass an image through a sibling app.
 
-## Unreleased — the hand detailer was declared missing while it was ready to run
+### the hand detailer was declared missing while it was ready to run
 
 `_hands_available()` tested for the `ultralytics` package. But at run time the
 detailer needs only **onnxruntime** plus the detector exported once to
@@ -231,7 +246,7 @@ Found on crispz-klein, where the case actually happened; propagated across the
 family, which shares `cz_protocol.py` by copy. Regression test:
 `tests/test_hands_available.py`.
 
-## Unreleased — prompt & negative boxes: capped growth + a visible scrollbar
+### prompt & negative boxes: capped growth + a visible scrollbar
 
 A long prompt used to grow the textarea unpredictably (Gradio-version
 dependent) and then CLIP silently, the text continuing below the fold with no
@@ -239,7 +254,7 @@ scroll cue on the dark theme. The prompt now grows to 12 lines (~+20%) and the
 negative to 6, then SCROLLS - with a themed, visible scrollbar (CSS capped at
 17em/9em as a version-proof backstop). Same behaviour across the whole family.
 
-## Unreleased — face & hand detailers brought up to crispz-studio level
+### face & hand detailers brought up to crispz-studio level
 
 The family carried a PRE-FIX copy of the face detailer and no hand detailer at
 all. Ported from crispz-studio, current version:
@@ -259,7 +274,7 @@ all. Ported from crispz-studio, current version:
   face between thumb and index). Empty = the refine only sharpens the crop.
 - UI: 🖐 checkbox + hand denoise slider (live), wired next to the face ones.
 
-## Unreleased — dequant disk cache (ported from crispz-studio) + metadata-ConvRot fix
+### dequant disk cache (ported from crispz-studio) + metadata-ConvRot fix
 
 FP8/INT8 'scaled' checkpoints were re-dequantized at EVERY load (minutes on a
 HDD). The bf16 result is now written once to cache/dequant (config
@@ -272,7 +287,7 @@ blobs; ignoring that variant dequantized such checkpoints to pure noise
 (caught on Krea 2, same format possible here). Both styles are now read.
 Tests: tests/test_dequant_cache.py (5) + metadata-convrot roundtrip.
 
-## Unreleased — queue: persistence + soft ⏸ Pause (ported from crispz-studio)
+### queue: persistence + soft ⏸ Pause (ported from crispz-studio)
 
 The job queue now SURVIVES a restart or crash: saved to cache/queue.json after
 every mutation (add/move/remove/clear) AND after every job, restored at startup
@@ -282,7 +297,7 @@ ways to halt a run: the new ⏸ Pause button finishes the current job then
 suspends; Stop interrupts mid-render and the interrupted job now STAYS queued
 (it was discarded before) - it re-runs entirely on resume.
 
-## Unreleased — AI provenance: C2PA reading + TrustMark invisible watermark (EU AI Act art. 50)
+### AI provenance: C2PA reading + TrustMark invisible watermark (EU AI Act art. 50)
 
 New optional brick `cz_provenance.py` (CPU only, the GPU is never touched), for
 machine-readable AI disclosure as required by EU AI Act Article 50 (applicable
@@ -309,7 +324,7 @@ Aug 2 2026; systems already on the market have until Dec 2 2026):
   `provenance_watermark: on` + GGUF/offload `model`; the watermark hook runs at save
   time only, and stays off by default.
 
-## Unreleased — XYZ grid: full-Prompt A/B axis + type-ahead suggestions
+### XYZ grid: full-Prompt A/B axis + type-ahead suggestions
 
 **Why.** Comparing whole prompts needed Prompt S/R gymnastics, and filling the
 Checkpoint/LoRA value fields meant copy-pasting long file names by hand.
@@ -330,14 +345,14 @@ Checkpoint/LoRA value fields meant copy-pasting long file names by hand.
   ⤵ suggest button). Validated live in the browser: checkpoint filter + insert, second
   segment after a comma, wildcard expansion inside a prompt, `:1` suffix.
 
-## Unreleased — Fix: ConvRot INT8 checkpoints rendered pure noise
+### Fix: ConvRot INT8 checkpoints rendered pure noise
 
 Ported from crispz-studio: the dequant loader now parses the `comfy_quant` JSON blobs
 and un-rotates ConvRot weights (grouped Hadamard, comfy-quants' specific H4-Kronecker
 matrix — NOT Sylvester) after descaling. Without it, `int8_tensorwise` + `convrot`
 checkpoints load structurally but render pure noise. Roundtrip unit test added.
 
-## Unreleased — CLI parity: expand / inpaint-mask / reframe-fit / force-ratio flags
+### CLI parity: expand / inpaint-mask / reframe-fit / force-ratio flags
 
 Ported from crispz-studio: **`--expand left,right,top,bottom`** (+ `--expand-ratio`) =
 the "Expand sides" directional outpaint; **`--inpaint-mask mask.png`**
@@ -346,7 +361,7 @@ the "Expand sides" directional outpaint; **`--inpaint-mask mask.png`**
 path now honours the forced ratio like the standard path). Documented in README_CLI.md;
 `--reframe … --reframe-fit cover` smoke-tested (1376×768, no fill).
 
-## Unreleased — Force aspect ratio: new "Extend (outpaint)" mode next to crop
+### Force aspect ratio: new "Extend (outpaint)" mode next to crop
 
 Ported from crispz-studio: the Upscale/img2img "Force aspect ratio" checkbox becomes a
 radio — **Off / Crop to fit / Extend (outpaint)**. Extend reaches the target ratio by
@@ -357,7 +372,7 @@ back **only over the bands + a feathered ~5% transition margin** — the origina
 stays pixel-for-pixel untouched. Config: `force_ratio_mode` (`crop`/`extend`), env
 `CZ_FORCE_RATIO_MODE`. Unit tests: `tests/test_force_ratio.py`.
 
-## Unreleased — FP8/INT8 "scaled" FLUX checkpoints loadable + GGUF layout guard
+### FP8/INT8 "scaled" FLUX checkpoints loadable + GGUF layout guard
 
 **Why.** Ported from crispz-studio: many FLUX.1 builds ship as ComfyUI **FP8 "scaled"**
 safetensors (e.g. `flux1-krea-dev_fp8_scaled`, 11 GB vs 22 GB bf16) and were skipped
@@ -383,7 +398,7 @@ params, zero meta tensors**; `flux1DevFp811GBR1` detected FP8; svdq-int4 still r
 pass arch+layout. Unit tests: `tests/test_quant_formats.py` (8 cases, incl. the Klein
 guard); `test_thumbs` made hermetic to the machine cache prefs.
 
-## Unreleased — Fix: a LoRA picked as checkpoint no longer hunts for an SD1.5 config
+### Fix: a LoRA picked as checkpoint no longer hunts for an SD1.5 config
 
 **Why.** A LoRA file misfiled in a checkpoints folder (e.g. `ZITnsfwLoRAv3.safetensors`)
 could be selected as the transformer: diffusers cannot recognise the state dict, falls
@@ -401,7 +416,7 @@ offline mode keeps working. Validated: 3 real Z-Image LoRAs detected, a real che
 accepted and actually loaded through the new path (25 s, valid model), the forced-LoRA
 guard raises the clear error, smoke 22/22.
 
-## Unreleased — Fix: concurrent generations no longer corrupt the shared scheduler
+### Fix: concurrent generations no longer corrupt the shared scheduler
 
 **Why.** Gradio does not serialise events from DIFFERENT listeners: a manual **Generate**
 still running while **Run queue** starts its first job (or the face detailer refining)
@@ -418,7 +433,7 @@ process_one→refine, detailer) stays free thanks to the RLock. Validated: 4 thr
 locked function show zero overlap, nesting does not deadlock, all entry points wrapped,
 smoke 22/22.
 
-## Unreleased — Thumbnail cache: app-folder default, UI field, and CLI flags for the new features
+### Thumbnail cache: app-folder default, UI field, and CLI flags for the new features
 
 - **New default location**: the Asset Browser thumbnail cache now lives in **`<app>/cache/`**
   (gitignored) instead of inside the output folder — the app folder is usually on a fast
