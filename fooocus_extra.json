@@ -1,11 +1,11 @@
 {
   "manifest_version": 1,
-  "id": "crispz",
-  "name": "Crispz - Z-Image upscaler + detailer",
-  "version": "0.1.0",
-  "description": "ESRGAN upscale + Z-Image Turbo refinement pass (img2img BF16). External process, invoked via CLI.",
-  "repo": "https://github.com/mikecastrodemaria/crispz",
-  "license_note": "Models pulled separately (HuggingFace for Z-Image, local ESRGAN folder).",
+  "id": "crispz-krea",
+  "name": "crispz-krea - FLUX.1-Krea upscaler + detailer",
+  "version": "1.16.0",
+  "description": "ESRGAN upscale + FLUX.1-Krea refinement pass (img2img), from crispz-krea. External process, invoked via CLI.",
+  "repo": "https://github.com/mikecastrodemaria/crispz-krea",
+  "license_note": "Models pulled separately (HuggingFace for FLUX.1-Krea, local ESRGAN folder).",
 
   "runtime": {
     "type": "cli",
