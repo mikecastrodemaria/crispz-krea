@@ -14,6 +14,7 @@ from PIL import Image
 import cz_core
 import cz_pipeline
 import cz_esrgan
+from cz_prompt import resolve_seed, expand_prompt_pair
 from cz_ui import (  # noqa: F401
     # constantes / chemins / defauts
     DEVICE, HERE, PREFS_PATH, PRESETS, SUPPORTED_FORMATS,
@@ -123,16 +124,19 @@ def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
             state["last"] = time.time()
             set_offload_mode(pick("cpu_offload", req.cpu_offload))
             img = Image.open(req.input)
+            # Seed concrete + variantes {a|b|c} / wildcards liees a cette seed.
+            seed = resolve_seed(req.seed)
+            prompt = expand_prompt_pair(req.prompt, "", seed)[0]
             result, t = process_one(
                 img, model, pick("factor", req.factor), pick("denoise", req.denoise),
-                pick("steps", req.steps), req.prompt, req.seed,
+                pick("steps", req.steps), prompt, seed,
                 pick("tile", req.tile), pick("overlap", req.overlap),
                 refine_tile=pick("refine_tile", req.refine_tile),
                 refine_overlap=pick("refine_overlap", req.refine_overlap),
             )
             _srcbase = os.path.splitext(os.path.basename(req.input))[0]
             dst = build_output_path(req.input, req.save_mode, req.output_dir, req.output_format,
-                                    tag=f"{_srcbase}_upscaled", seed=req.seed, size=result.size)
+                                    tag=f"{_srcbase}_upscaled", seed=seed, size=result.size)
             if dst:
                 save_image(result, dst, req.output_format)
             state["last"] = time.time()
@@ -259,12 +263,19 @@ def _xyz_cli_run(args, parser, model_name):
                     combo = [(xn, x)] + ([(yn, y)] if yn else []) + ([(zn, z)] if zn else [])
                     for aname, aval in combo:
                         _xyz_cli_apply(aname, aval, p, base_ms)
+                    # Par cellule, APRES les axes (Prompt / S/R agissent sur le texte
+                    # brut): seed -1 resolue (chaque cellule garde son tirage, comme
+                    # la grille de l'UI), variantes {a|b|c} + wildcards liees a cette
+                    # seed (index = numero de cellule pour le mode 'dans l'ordre').
+                    p["seed"] = resolve_seed(p["seed"])
+                    p["prompt"], cell_neg = expand_prompt_pair(
+                        p["prompt"], args.negative, p["seed"], index=done)
                     set_guidance(p["guidance"])
                     label = " ".join(f"{n}={_xyz_fmt_value(n, v)}" for n, v in combo)
                     _log(f"combo {done + 1}/{total}: {label}", mod="xyz")
                     img, t = txt2img_run(
                         p["prompt"], args.gen_width, args.gen_height, p["gen_steps"],
-                        p["seed"], args.negative, upscale=args.upscale,
+                        p["seed"], cell_neg, upscale=args.upscale,
                         esrgan_model=p["esrgan"], factor=p["factor"], denoise=p["denoise"],
                         steps=args.steps, tile=p["tile"], overlap=args.overlap,
                         refine_tile=p["refine_tile"], refine_overlap=args.refine_overlap,
@@ -277,7 +288,7 @@ def _xyz_cli_run(args, parser, model_name):
                                                     index=done + 1)
                             if dst:
                                 save_image(img, dst, args.output_format, meta=_gen_meta(
-                                    "xyz", p["prompt"], args.negative, p["seed"],
+                                    "xyz", p["prompt"], cell_neg, p["seed"],
                                     p["gen_steps"], p["guidance"], img.size,
                                     extra={"xyz": label}))
                         except Exception as e:
@@ -554,6 +565,16 @@ def cli_main(argv=None):
         save_image(res, dst, "png")
         print(os.path.abspath(dst))
         return 0
+
+    # Seed -1 resolue en valeur concrete (reproductible, nom de fichier, detailleurs)
+    # puis variantes {a|b|c} + wildcards du prompt et du negatif, liees a cette seed.
+    # --xyz fait tout cela PAR CELLULE (_xyz_cli_run): ses axes Prompt / S/R agissent
+    # sur le texte brut et chaque cellule garde sa propre seed.
+    _xyz_cells = bool(args.xyz and args.txt2img)
+    if not _xyz_cells:
+        args.seed = resolve_seed(args.seed)
+        args.prompt, args.negative = expand_prompt_pair(args.prompt, args.negative,
+                                                        args.seed, index=0)
 
     # --reframe W:H : reframe -i (contain = outpaint / cover = crop) puis termine
     if args.reframe:
