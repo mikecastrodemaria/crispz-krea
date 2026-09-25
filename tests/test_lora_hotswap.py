@@ -40,7 +40,7 @@ class FakePipe:
         for n in names:
             self.adapters.pop(n, None)
 
-    def load_lora_weights(self, folder, weight_name=None, adapter_name=None):
+    def load_lora_weights(self, folder, weight_name=None, adapter_name=None, **kw):
         if self.fail:
             raise RuntimeError("PEFT backend is required")
         self.calls.append(("load", weight_name, adapter_name))

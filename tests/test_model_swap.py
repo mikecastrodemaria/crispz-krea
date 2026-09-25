@@ -44,7 +44,7 @@ class FakePipe:
     def unload_lora_weights(self):
         self.calls.append(("unload_lora",))
 
-    def load_lora_weights(self, folder, weight_name=None, adapter_name=None):
+    def load_lora_weights(self, folder, weight_name=None, adapter_name=None, **kw):
         self.calls.append(("load_lora", weight_name))
 
     def set_adapters(self, names, weights):
