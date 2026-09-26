@@ -1262,5 +1262,9 @@ single backslashes in a Windows path) is reported loudly at startup instead
 of silently falling back to the sample.
 `czp caps` prints capabilities and whether an instance is running. Exit codes:
 0 ok / 1 run error / 2 bad spec / 3 unsupported op or protocol / 4 no route.
+Every op of the v1 vocabulary (`caps`, `gen`, `upscale`, `edit`, `inpaint`) always
+answers in JSON: one a family tool does not implement comes back as code 3 with the
+reason, never as a usage dump on stderr - `caps.ops` lists the ops this build
+implements, `caps.supports` what its engine can actually do.
 Config `cli_protocol.instance_url`. Contract + client reference:
 the comics2crispz repo (`docs/CLI_PROTOCOL.md`).
