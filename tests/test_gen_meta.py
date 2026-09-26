@@ -95,7 +95,12 @@ def test_the_a1111_chunk_carries_them_too():
 # nom d'origine.
 # ---------------------------------------------------------------------------
 
-TMP_UPLOAD = "C:\\Users\\x\\AppData\\Local\\Temp\\gradio\\ab12\\ma_photo.png"
+# Full input paths: os.path.join keeps the separator of the running OS, and
+# os.path.basename does not split on a backslash under Linux, where the CI runs.
+TMP_UPLOAD = os.path.join("C:" + os.sep, "Users", "x", "AppData", "Local", "Temp",
+                          "gradio", "ab12", "ma_photo.png")
+SRC = os.path.join("F:" + os.sep, "in", "shot.png")
+OTHER = os.path.join("F:" + os.sep, "in", "other.png")
 
 
 def _pil(name=None):
@@ -107,7 +112,7 @@ def _pil(name=None):
 
 
 def test_a_path_a_pil_and_an_editor_all_give_the_name():
-    assert P.source_meta("F:\\in\\shot.png") == {"source": "shot.png"}
+    assert P.source_meta(SRC) == {"source": "shot.png"}
     assert P.source_meta(_pil(TMP_UPLOAD)) == {"source": "ma_photo.png"}
     assert P.source_meta({"background": _pil(TMP_UPLOAD),
                           "composite": _pil()}) == {"source": "ma_photo.png"}
@@ -122,7 +127,7 @@ def test_an_unknown_source_records_nothing():
 
 
 def test_several_references_come_back_as_a_list():
-    got = P.source_meta([_pil(TMP_UPLOAD), None, "F:\\in\\other.png", None], "ref_images")
+    got = P.source_meta([_pil(TMP_UPLOAD), None, OTHER, None], "ref_images")
     assert got == {"ref_images": ["ma_photo.png", "other.png"]}, got
     print("OK test_several_references_come_back_as_a_list")
 
@@ -131,10 +136,10 @@ def test_full_and_off_are_honoured():
     old = P.METADATA_SOURCE
     try:
         P.METADATA_SOURCE = "full"
-        got = P.source_meta("F:\\in\\shot.png")["source"]
+        got = P.source_meta(SRC)["source"]
         assert got.endswith("shot.png") and "in" in got, got
         P.METADATA_SOURCE = "off"
-        assert P.source_meta("F:\\in\\shot.png") == {}
+        assert P.source_meta(SRC) == {}
     finally:
         P.METADATA_SOURCE = old
     print("OK test_full_and_off_are_honoured")
