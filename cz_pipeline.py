@@ -386,7 +386,7 @@ def _flux_call(pipe, **kw):
         if any(k in kw for k in ("true_cfg_scale", "negative_prompt", "callback_on_step_end")):
             for k in ("true_cfg_scale", "negative_prompt", "callback_on_step_end"):
                 kw.pop(k, None)
-            _dbg(f"flux call: retry sans kwargs optionnels ({e})")
+            _dbg(f"flux call: retrying without the optional kwargs ({e})")
             return pipe(**kw)
         raise
 
@@ -436,7 +436,7 @@ def _apply_sampler(pipe):
     try:
         sched = _build_scheduler(SAMPLER, SCHEDULE, _BASE_SCHED_CONFIG)
         if not _scheduler_accepts_sigmas(sched):
-            raise ValueError(f"{type(sched).__name__} n'accepte pas les sigmas custom de Z-Image")
+            raise ValueError(f"{type(sched).__name__} does not accept the custom sigmas of Z-Image")
         pipe.scheduler = sched
         _dbg(f"sampler applied: {SAMPLER}/{SCHEDULE} -> {type(pipe.scheduler).__name__}")
     except Exception as e:
@@ -2319,8 +2319,8 @@ def _ensure_base():
     _off = _effective_offload()
     _base_off = _resolve_auto() if OFFLOAD_MODE == "auto" else OFFLOAD_MODE
     if _off != _base_off:
-        _log(f"GGUF base: offload '{_base_off}' force a '{_off}' (un GGUF ne tourne pas "
-             f"sur GPU en none/sequential -> sinon CPU, ~500s/step)")
+        _log(f"GGUF base: offload '{_base_off}' forced to '{_off}' (a GGUF does not run "
+             f"on the GPU in none/sequential -> otherwise CPU, ~500s/step)")
     if DEVICE == "cuda" and _off == "model":
         pipe.enable_model_cpu_offload()
     elif DEVICE == "cuda" and _off == "sequential":
@@ -2845,7 +2845,7 @@ def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
     # Anti-duplication 1: prompt vide par tuile (le prompt global decrit toute la compo).
     prompt = _tile_prompt(prompt)
     if not (prompt or "").strip():
-        _log("refine tiled: prompt vide par tuile (anti-duplication; regle refine_tile_prompt).")
+        _log("refine tiled: empty prompt per tile (anti-duplication; rule refine_tile_prompt).")
     # Anti-duplication 2 (filet): a fort denoise chaque tuile peut encore deriver.
     denoise = float(denoise)
     if _TILE_DENOISE_CAP > 0 and denoise > _TILE_DENOISE_CAP:
@@ -2949,7 +2949,7 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
         if rt <= 0 and max(rw, rh) > _AUTO_TILE_ABOVE:
             rt = _pick_refine_tile(rw, rh, int(refine_overlap) or 64)
             _log(f"refine: image {rw}x{rh} > {_AUTO_TILE_ABOVE}px -> auto-tiling (tile {rt}) "
-                 "pour eviter le pic VRAM (regles: auto_refine_tile_above, auto_refine_tile)")
+                 "to avoid the VRAM spike (rules: auto_refine_tile_above, auto_refine_tile)")
         if rt > 0:
             out = _refine_tiled(pipe, img, denoise, steps, prompt, seed,
                                 rt, int(refine_overlap) or 64)
