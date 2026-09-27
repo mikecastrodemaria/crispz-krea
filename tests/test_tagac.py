@@ -76,11 +76,11 @@ def test_ensure_sources_resilient(monkey_dir=None):
     old = cz_tags.TAGS_DIR
     cz_tags.TAGS_DIR = tempfile.mkdtemp()
     try:
-        # 1 URL valide + 1 cassee -> 1 fichier, pas d'exception
+        # 1 valid URL + 1 broken -> 1 file, no exception
         n = cz_tags.ensure_tag_sources([f"{base}/ok.csv", f"{base}/broken.csv"])
         assert n == 1
         assert [os.path.basename(p) for p in cz_tags.list_tag_files()] == ["ok.csv"]
-        # deja present -> pas de re-telechargement
+        # already present -> no re-downloading
         assert cz_tags.ensure_tag_sources([f"{base}/ok.csv"]) == 0
     finally:
         cz_tags.TAGS_DIR = old

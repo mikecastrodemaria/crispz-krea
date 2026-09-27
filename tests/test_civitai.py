@@ -22,13 +22,13 @@ def _tmpfile(data=b"hello crispz"):
 
 
 def test_compute_sha256_progress():
-    p = _tmpfile(b"x" * (3 << 20))          # 3 MB -> plusieurs chunks de 1 MB
+    p = _tmpfile(b"x" * (3 << 20))          # 3 MB -> several 1 MB chunks
     events = []
     h = cz_civitai._compute_sha256(p, progress=lambda ph, fr, tx: events.append((ph, fr)))
     assert h == hashlib.sha256(b"x" * (3 << 20)).hexdigest()
     assert events and all(ph == "hash" for ph, _ in events)
     fracs = [fr for _, fr in events]
-    assert fracs == sorted(fracs) and abs(fracs[-1] - 1.0) < 1e-9     # croissant -> 100%
+    assert fracs == sorted(fracs) and abs(fracs[-1] - 1.0) < 1e-9     # growing -> 100%
 
 
 def test_model_sha256_reads_sidecar_no_hash():
@@ -36,7 +36,7 @@ def test_model_sha256_reads_sidecar_no_hash():
     sha = "a" * 64
     with open(os.path.splitext(p)[0] + ".metadata.json", "w", encoding="utf-8") as f:
         json.dump({"sha256": sha.upper()}, f)
-    # doit lire le sidecar (minuscule) sans hasher le fichier -> progress jamais appele
+    # must read the sidecar (lowercase) without hashing the file -> progress never called
     called = []
     got = cz_civitai.model_sha256(p, progress=lambda *a: called.append(a))
     assert got == sha and not called
@@ -62,8 +62,8 @@ def test_has_preview_and_sidecar_load():
 
 
 def test_sha256_is_cached_and_reused():
-    """Regression: le hash etait recalcule a CHAQUE passe (des centaines de Go relus).
-    Il doit etre persiste dans le sidecar et reutilise."""
+    """A regression: the hash was recomputed on EVERY pass (hundreds of GB re-read).
+    It must be persisted in the sidecar and reused."""
     p = _tmpfile(b"y" * 4096)
     calls = []
     real = cz_civitai._compute_sha256
@@ -74,8 +74,8 @@ def test_sha256_is_cached_and_reused():
 
     cz_civitai._compute_sha256 = counting
     try:
-        h1 = cz_civitai.model_sha256(p)          # calcule + met en cache
-        h2 = cz_civitai.model_sha256(p)          # doit lire le cache
+        h1 = cz_civitai.model_sha256(p)          # computes + caches
+        h2 = cz_civitai.model_sha256(p)          # must read the cache
     finally:
         cz_civitai._compute_sha256 = real
     assert h1 == h2 == hashlib.sha256(b"y" * 4096).hexdigest()
@@ -87,7 +87,7 @@ def test_sha256_is_cached_and_reused():
 def test_sha256_cache_invalidated_when_size_changes():
     p = _tmpfile(b"z" * 100)
     cz_civitai.model_sha256(p)
-    with open(p, "wb") as f:                     # modele remplace -> taille differente
+    with open(p, "wb") as f:                     # the model replaced -> a different size
         f.write(b"z" * 200)
     assert cz_civitai._cached_sha256(p) is None, "cache perime doit etre rejete"
     assert cz_civitai.model_sha256(p) == hashlib.sha256(b"z" * 200).hexdigest()
@@ -95,15 +95,15 @@ def test_sha256_cache_invalidated_when_size_changes():
 
 def test_metadata_sidecar_wins_over_our_cache():
     p = _tmpfile(b"w" * 64)
-    cz_civitai.model_sha256(p)                   # remplit notre cache
+    cz_civitai.model_sha256(p)                   # fills our cache
     ext = "b" * 64
     with open(os.path.splitext(p)[0] + ".metadata.json", "w", encoding="utf-8") as f:
         json.dump({"sha256": ext}, f)
-    assert cz_civitai.model_sha256(p) == ext     # convention externe prioritaire
+    assert cz_civitai.model_sha256(p) == ext     # the external convention has the priority
 
 
 def test_fetch_sidecar_merge_keeps_hash_cache(monkeypatch=None):
-    """Le fetch reecrit le sidecar: il ne doit PAS effacer le cache de hash."""
+    """The fetch rewrites the sidecar: it must NOT erase the hash cache."""
     p = _tmpfile(b"m" * 32)
     sha = cz_civitai.model_sha256(p)
     payload = {"id": 5, "modelId": 9, "name": "v", "baseModel": "Z", "trainedWords": [],
@@ -124,19 +124,19 @@ def test_fetch_sidecar_merge_keeps_hash_cache(monkeypatch=None):
 
 
 def test_examples_from_reads_meta_prompt():
-    """Les images by-hash portent un meta REMPLI -> le prompt doit etre extrait.
-    Regression: on lisait l'endpoint /images dont 'meta' est toujours null -> 0 prompt."""
+    """The by-hash images carry a FILLED meta -> the prompt must be extracted.
+    A regression: we read the /images endpoint, whose 'meta' is always null -> 0 prompt."""
     imgs = [
         {"url": "u1", "width": 8, "height": 9, "meta": {"prompt": "  a nordic woman  "}},
-        {"url": "u2", "meta": None},                 # parametres non publies
-        {"url": "u3", "meta": {"prompt": ""}},       # meta sans prompt
-        {"no_url": 1, "meta": {"prompt": "x"}},      # sans url -> ignoree
+        {"url": "u2", "meta": None},                 # the parameters are not published
+        {"url": "u3", "meta": {"prompt": ""}},       # a meta with no prompt
+        {"no_url": 1, "meta": {"prompt": "x"}},      # with no url -> ignored
     ]
     ex = cz_civitai._examples_from(imgs)
-    assert len(ex) == 3                                    # la 4e est ignoree
+    assert len(ex) == 3                                    # the 4th is ignored
     assert ex[0]["prompt"] == "a nordic woman" and ex[0]["has_prompt"] is True
     assert ex[0]["width"] == 8 and ex[0]["height"] == 9
-    assert ex[1]["prompt"] == "" and ex[1]["has_prompt"] is False   # meta None -> honnete
+    assert ex[1]["prompt"] == "" and ex[1]["has_prompt"] is False   # a None meta -> honest
     assert ex[2]["has_prompt"] is False
 
 
@@ -146,7 +146,7 @@ def test_examples_from_respects_limit():
 
 
 def test_get_version_by_hash_carries_images(monkeypatch=None):
-    """by-hash doit remonter ses images (elles contiennent les prompts) -> 0 requete de plus."""
+    """by-hash must report its images (they hold the prompts) -> 0 extra request."""
     payload = {"id": 42, "modelId": 7, "name": "v1", "baseModel": "Z-Image",
                "trainedWords": ["trg"], "model": {"name": "M"},
                "images": [{"url": "u", "meta": {"prompt": "hello"}}]}
@@ -169,21 +169,21 @@ def _with_model_payload(payload, fn):
         cz_civitai._api_get = old
 
 
-# Page CivitAI typique: la derniere version publiee l'est pour une AUTRE base.
+# A typical CivitAI page: the latest published version is for ANOTHER base.
 _MIXED_BASES = {"modelVersions": [
     {"id": 300, "name": "3.0 (Krea2)", "baseModel": "Krea 2"},
     {"id": 200, "name": "2.0", "baseModel": "Z-Image"},
-    {"id": 100, "name": "1.0", "baseModel": "Z Image"},     # libelle variant -> meme base
+    {"id": 100, "name": "1.0", "baseModel": "Z Image"},     # a variant label -> the same base
 ]}
 
 
 def test_latest_version_ignores_other_base_models():
-    """Regression: '3.0 (Krea2)' etait signale comme update d'un LoRA Z-Image alors qu'il
-    ne tourne pas dessus. La derniere version de la MEME base doit gagner."""
+    """A regression: '3.0 (Krea2)' was reported as an update of a Z-Image LoRA although it
+    does not run on it. The latest version of the SAME base must win."""
     got = _with_model_payload(_MIXED_BASES,
                               lambda: cz_civitai.get_latest_version(9, base_model="Z-Image"))
     assert got["id"] == 200 and got["name"] == "2.0"
-    # Sans filtre (base locale inconnue) -> comportement historique: la plus recente.
+    # With no filter (the local base unknown) -> the historical behaviour: the most recent.
     raw = _with_model_payload(_MIXED_BASES, lambda: cz_civitai.get_latest_version(9))
     assert raw["id"] == 300
 
@@ -192,7 +192,7 @@ def test_update_flag_not_raised_by_a_new_base_model():
     upd = _with_model_payload(
         _MIXED_BASES, lambda: cz_civitai._update_fields(9, 200, base_model="Z-Image"))
     assert upd["update_available"] is False, "Krea2 n'est pas un update pour du Z-Image"
-    # Vraie mise a jour: on est sur la 1.0 Z-Image -> la 2.0 Z-Image (pas la 3.0 Krea2).
+    # A real update: we are on the 1.0 Z-Image -> the 2.0 Z-Image (not the 3.0 Krea2).
     upd = _with_model_payload(
         _MIXED_BASES, lambda: cz_civitai._update_fields(9, 100, base_model="z image"))
     assert upd["update_available"] is True and upd["latest_versionId"] == 200
@@ -200,8 +200,8 @@ def test_update_flag_not_raised_by_a_new_base_model():
 
 
 def test_update_flag_infers_base_from_our_own_version():
-    """Vieux sidecar sans 'baseModel': la base est deduite de NOTRE versionId dans la
-    reponse (deja telechargee) -> le filtre marche sans requete supplementaire."""
+    """An old sidecar with no 'baseModel': the base is deduced from OUR versionId in the
+    answer (already downloaded) -> the filter works with no extra request."""
     upd = _with_model_payload(_MIXED_BASES, lambda: cz_civitai._update_fields(9, 200))
     assert upd["update_available"] is False
     upd = _with_model_payload(_MIXED_BASES, lambda: cz_civitai._update_fields(9, 100))
@@ -209,16 +209,16 @@ def test_update_flag_infers_base_from_our_own_version():
 
 
 def test_update_flag_when_no_version_shares_our_base():
-    """Le fichier local est d'une base absente de la page (ou renommee cote API) ->
-    pas d'update plutot qu'un faux positif."""
+    """The local file is of a base absent from the page (or renamed on the API side) ->
+    no update rather than a false positive."""
     upd = _with_model_payload(
         _MIXED_BASES, lambda: cz_civitai._update_fields(9, 200, base_model="Flux.1 D"))
     assert upd["update_available"] is False and upd["latest_versionId"] is None
 
 
 def test_update_flag_when_api_omits_base_models():
-    """Si l'API ne renseigne aucun baseModel, l'info est indisponible (pas
-    contradictoire) -> on ne filtre pas et on garde le comportement historique."""
+    """When the API states no baseModel at all, the information is unavailable (not
+    contradictory) -> we do not filter and we keep the historical behaviour."""
     payload = {"modelVersions": [{"id": 300, "name": "3.0"}, {"id": 200, "name": "2.0"}]}
     upd = _with_model_payload(
         payload, lambda: cz_civitai._update_fields(9, 200, base_model="Z-Image"))
@@ -226,8 +226,8 @@ def test_update_flag_when_api_omits_base_models():
 
 
 def test_api_get_falls_back_to_global_key():
-    """api_key=None doit utiliser la cle globale (sinon les appels internes partent
-    anonymes et ratent les contenus gates/NSFW)."""
+    """api_key=None must use the global key (otherwise the internal calls go out
+    anonymous and miss the gated/NSFW contents)."""
     seen = {}
 
     class _R:
@@ -243,11 +243,11 @@ def test_api_get_falls_back_to_global_key():
     cz_civitai.urllib.request.urlopen = fake_urlopen
     cz_civitai.API_KEY = "SECRET123"
     try:
-        cz_civitai._api_get("/models/1")                    # sans api_key explicite
+        cz_civitai._api_get("/models/1")                    # with no explicit api_key
         assert "token=SECRET123" in seen["url"], seen["url"]
-        cz_civitai._api_get("/models/1", api_key="OTHER")   # explicite -> prioritaire
+        cz_civitai._api_get("/models/1", api_key="OTHER")   # explicit -> it has the priority
         assert "token=OTHER" in seen["url"]
-        cz_civitai.API_KEY = None                           # pas de cle -> pas de token
+        cz_civitai.API_KEY = None                           # no key -> no token
         cz_civitai._api_get("/models/1")
         assert "token=" not in seen["url"]
     finally:

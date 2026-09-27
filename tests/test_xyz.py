@@ -34,8 +34,8 @@ def test_match():
     ch = ["euler", "unipc"]
     assert cz_ui._xyz_match("EULER", ch) == ("euler", None)
     assert cz_ui._xyz_match("uni", ch) == ("unipc", None)
-    assert cz_ui._xyz_match("xxx", ch)[0] is None                 # introuvable
-    assert cz_ui._xyz_match("e", ["euler", "exponential"])[0] is None  # ambigu
+    assert cz_ui._xyz_match("xxx", ch)[0] is None                 # not found
+    assert cz_ui._xyz_match("e", ["euler", "exponential"])[0] is None  # ambiguous
 
 
 def test_validate():
@@ -55,20 +55,20 @@ def test_validate():
     assert ok == [0.5, 1.0] and err is None
     ok, err = cz_ui._xyz_validate_axis("Sampler", ["uni"], vals, ms)
     assert ok == ["unipc"] and err is None
-    # 'simple' (nom ComfyUI du schedule natif) doit passer comme alias de sgm_uniform
+    # 'simple' (the ComfyUI name of the native schedule) must go through as an alias of sgm_uniform
     ok, err = cz_ui._xyz_validate_axis("Schedule", ["simple", "beta"], vals, ms)
     assert ok == ["simple", "beta"] and err is None
 
 
 def test_schedule_alias_simple():
-    """'simple' = sgm_uniform: accepte partout en entree, normalise en sortie (les
-    metadonnees et les presets ne doivent porter qu'un seul nom pour une seule courbe)."""
+    """'simple' = sgm_uniform: accepted everywhere on input, normalised on output (the
+    metadata and the presets must carry only one name for a single curve)."""
     assert cz_pipeline._norm_schedule("simple") == "sgm_uniform"
     assert cz_pipeline._norm_schedule(" SIMPLE ") == "sgm_uniform"
     assert cz_pipeline._norm_schedule("beta") == "beta"
-    assert cz_pipeline._norm_schedule("nope") == "sgm_uniform"      # inconnu -> defaut
+    assert cz_pipeline._norm_schedule("nope") == "sgm_uniform"      # unknown -> the default
     assert "simple" in cz_pipeline.SCHEDULE_INPUTS
-    assert "simple" not in cz_pipeline.SCHEDULE_CHOICES             # pas un 2e choix UI
+    assert "simple" not in cz_pipeline.SCHEDULE_CHOICES             # not a 2nd UI choice
     old = cz_pipeline.SCHEDULE
     try:
         cz_pipeline.set_schedule("beta")
@@ -101,7 +101,7 @@ def test_build_jobs_sr():
     axes = [("Prompt S/R", ["cat", "dog", "fox"])]
     jobs, _meta = cz_ui._xyz_build_jobs(axes, base_vals, base_ms)
     assert len(jobs) == 3
-    assert jobs[0]["vals"][0] == "a red cat on a sofa"     # 1re valeur = terme -> inchange
+    assert jobs[0]["vals"][0] == "a red cat on a sofa"     # the 1st value = the term -> unchanged
     assert jobs[1]["vals"][0] == "a red dog on a sofa"
     assert jobs[2]["vals"][0] == "a red fox on a sofa"
 
@@ -113,7 +113,7 @@ def test_assemble():
     cells = {(0, 0, 0): Image.new("RGB", (640, 480), (200, 40, 40)),
              (1, 0, 0): Image.new("RGB", (640, 480), (40, 200, 40)),
              (0, 1, 0): Image.new("RGB", (640, 480), (40, 40, 200))}
-    # (1,1,0) manquante -> placeholder attendu, pas d'exception
+    # (1,1,0) missing -> a placeholder expected, no exception
     paths = cz_ui._xyz_assemble(meta, cells, thumb=128)
     assert len(paths) == 1 and os.path.isfile(paths[0])
     sheet = Image.open(paths[0])
@@ -128,31 +128,31 @@ def test_csv_join_roundtrip():
 
 
 def test_suggestions():
-    fill, ph = cz_ui._xyz_suggestions("Steps")            # calibrage numerique
+    fill, ph = cz_ui._xyz_suggestions("Steps")            # numeric calibration
     assert fill == "4, 8, 12, 20, 28" and "4, 8" in ph
-    fill, ph = cz_ui._xyz_suggestions("Sampler")          # liste fermee
-    # Derive de la source de verite (cz_pipeline.SAMPLER_CHOICES): ajouter un sampler
-    # ne doit pas casser le test, mais la suggestion doit rester exhaustive.
+    fill, ph = cz_ui._xyz_suggestions("Sampler")          # a closed list
+    # Derived from the source of truth (cz_pipeline.SAMPLER_CHOICES): adding a sampler
+    # must not break the test, but the suggestion must stay exhaustive.
     assert cz_ui._xyz_parse_values(fill) == list(cz_pipeline.SAMPLER_CHOICES)
-    # Presets et repos viennent de la CONFIG: les deriver evite que ce test casse sur
-    # un fork (FLUX/Qwen ont leurs propres presets et repos de base) a chaque merge.
+    # The presets and repos come from the CONFIG: deriving them keeps this test from
+    # breaking on a fork (FLUX/Qwen have their own presets and base repos) on every merge.
     fill, ph = cz_ui._xyz_suggestions("Performance")
     assert set(cz_ui._xyz_parse_values(fill)) == set(cz_ui.PERFORMANCE)
-    fill, ph = cz_ui._xyz_suggestions("Checkpoint")       # repos officiels presents
+    fill, ph = cz_ui._xyz_suggestions("Checkpoint")       # the official repos present
     for _repo in cz_ui.ZIMAGE_BASE_REPOS:
         assert _repo in cz_ui._xyz_parse_values(fill)
-    fill, ph = cz_ui._xyz_suggestions("Prompt S/R")       # pas d'insertion, aide seule
+    fill, ph = cz_ui._xyz_suggestions("Prompt S/R")       # no insertion, the help alone
     assert fill == "" and "search term" in ph
     fill, ph = cz_ui._xyz_suggestions("(none)")
     assert fill == "" and "pick an axis" in ph
 
 
 def test_fill_preserves_user_input():
-    upd = cz_ui._ui_xyz_fill("Steps", "5, 9")             # champ non vide -> intouche
+    upd = cz_ui._ui_xyz_fill("Steps", "5, 9")             # a non-empty field -> untouched
     assert "value" not in upd
-    upd = cz_ui._ui_xyz_fill("Steps", "  ")               # vide -> rempli
+    upd = cz_ui._ui_xyz_fill("Steps", "  ")               # empty -> filled
     assert upd["value"] == "4, 8, 12, 20, 28"
-    upd = cz_ui._ui_xyz_fill("Prompt S/R", "")            # rien a inserer
+    upd = cz_ui._ui_xyz_fill("Prompt S/R", "")            # nothing to insert
     assert "value" not in upd
 
 
@@ -160,17 +160,17 @@ def test_cli_apply():
     import cz_cli
     p = {"prompt": "a red cat", "gen_steps": 8, "guidance": 0.0, "seed": 42,
          "esrgan": None, "factor": 2.0, "denoise": 0.3, "tile": 512, "refine_tile": 0}
-    cz_cli._xyz_cli_apply("Steps", 12, p, {})              # kind=val -> param abstrait
+    cz_cli._xyz_cli_apply("Steps", 12, p, {})              # kind=val -> an abstract param
     cz_cli._xyz_cli_apply("Guidance", 3.5, p, {})
     cz_cli._xyz_cli_apply("Denoise", 0.4, p, {})
     assert p["gen_steps"] == 12 and p["guidance"] == 3.5 and p["denoise"] == 0.4
-    # Preset pris dans la CONFIG (pas de nom code en dur: les forks en ont d'autres).
+    # A preset taken from the CONFIG (no hardcoded name: the forks have others).
     _name = list(cz_ui.PERFORMANCE)[-1]
     _st, _g = cz_ui.PERFORMANCE[_name]
     cz_cli._xyz_cli_apply("Performance", _name, p, {})
     assert p["gen_steps"] == int(_st) and p["guidance"] == float(_g)
     cz_ui._XYZ_AXES["Prompt S/R"]["_term"] = "cat"
-    cz_cli._xyz_cli_apply("Prompt S/R", "cat", p, {})      # 1re valeur = inchange
+    cz_cli._xyz_cli_apply("Prompt S/R", "cat", p, {})      # the 1st value = unchanged
     assert p["prompt"] == "a red cat"
     cz_cli._xyz_cli_apply("Prompt S/R", "dog", p, {})
     assert p["prompt"] == "a red dog"
@@ -178,22 +178,22 @@ def test_cli_apply():
 
 def test_cli_axis_name_resolution():
     ax = [k for k in cz_ui._XYZ_AXES if k != "(none)"]
-    assert cz_ui._xyz_match("step", ax) == ("Steps", None)          # partiel unique
-    assert cz_ui._xyz_match("GUIDANCE", ax) == ("Guidance", None)   # casse ignoree
-    # "prompt" = match EXACT du nouvel axe Prompt (l'exact gagne sur le partiel);
-    # "prompt s" reste le raccourci de Prompt S/R.
+    assert cz_ui._xyz_match("step", ax) == ("Steps", None)          # a unique partial
+    assert cz_ui._xyz_match("GUIDANCE", ax) == ("Guidance", None)   # the case ignored
+    # "prompt" = an EXACT match of the new Prompt axis (the exact one beats the partial);
+    # "prompt s" stays the shortcut for Prompt S/R.
     assert cz_ui._xyz_match("prompt", ax) == ("Prompt", None)
     assert cz_ui._xyz_match("prompt s", ax) == ("Prompt S/R", None)
-    assert cz_ui._xyz_match("ile", ax)[0] is None                   # ambigu (Tile/Refine tile)
-    assert cz_ui._xyz_match("tile", ax) == ("Tile", None)           # exact (casse ignoree) gagne
+    assert cz_ui._xyz_match("ile", ax)[0] is None                   # ambiguous (Tile/Refine tile)
+    assert cz_ui._xyz_match("tile", ax) == ("Tile", None)           # an exact match (the case ignored) wins
 
 
 def test_prompt_axis():
-    # validation: valeurs telles quelles (prompts complets)
+    # validation: the values as they are (complete prompts)
     vals, err = cz_ui._xyz_validate_axis(
         "Prompt", ["a cat", "a dog, fluffy", "a fox"], _base_vals(), {})
     assert err is None and len(vals) == 3 and vals[1] == "a dog, fluffy"
-    # apply UI: remplace TOUT le prompt du snapshot
+    # apply UI: replaces the snapshot's WHOLE prompt
     fv = _base_vals()
     cz_ui._xyz_apply("Prompt", "a dog, fluffy", fv, {})
     assert fv[cz_ui._Q_IDX["prompt"]] == "a dog, fluffy"
@@ -202,15 +202,15 @@ def test_prompt_axis():
     p = {"prompt": "base"}
     cz_cli._xyz_cli_apply("Prompt", "a fox", p, {})
     assert p["prompt"] == "a fox"
-    # etiquette de planche: tronquee, jamais le prompt entier
+    # the contact sheet's label: truncated, never the whole prompt
     lbl = cz_ui._xyz_fmt_value("Prompt", "a very long prompt " * 10)
     assert len(lbl) <= 28 and lbl.endswith("...")
     assert cz_ui._xyz_fmt_value("Prompt", "short") == "short"
 
 
 def _with_fake_loras(names):
-    """Remplace temporairement la liste des LoRA disponibles (les tests ne doivent
-    pas dependre du contenu du dossier loras de la machine)."""
+    """Temporarily replaces the list of available LoRAs (the tests must not
+    depend on the content of the machine's loras folder)."""
     import contextlib
 
     @contextlib.contextmanager
@@ -235,18 +235,18 @@ _FAKE_LORAS = ["epochs/ollie_e000010.safetensors",
 def test_lora_name_validate():
     vals, ms = _base_vals(), {"loras": []}
     with _with_fake_loras(_FAKE_LORAS):
-        # resolution par fragment unique + case temoin None
+        # resolution by a unique fragment + the None control case
         ok, err = cz_ui._xyz_validate_axis("LoRA", ["e000010", "e000030", "None"], vals, ms)
         assert err is None, err
         assert ok == [("epochs/ollie_e000010.safetensors", None),
                       ("epochs/ollie_e000030.safetensors", None), ("None", None)], ok
-        # fragment ambigu -> refus, pas de choix au hasard
+        # an ambiguous fragment -> a refusal, no choosing at random
         ok, err = cz_ui._xyz_validate_axis("LoRA", ["ollie"], vals, ms)
         assert ok is None and "ambiguous" in err, (ok, err)
-        # inconnu -> refus
+        # unknown -> a refusal
         ok, err = cz_ui._xyz_validate_axis("LoRA", ["nope"], vals, ms)
         assert ok is None and "not found" in err, (ok, err)
-        # nom contenant une virgule (protege par des guillemets en amont)
+        # a name holding a comma (protected by quotes upstream)
         ok, err = cz_ui._xyz_validate_axis("LoRA", ["other, comma"], vals, ms)
         assert err is None and ok[0][0] == "style/other, comma.safetensors", (ok, err)
 
@@ -259,7 +259,7 @@ def test_lora_name_weight_validate():
         assert err is None, err
         assert ok == [("epochs/ollie_e000010.safetensors", 0.5),
                       ("epochs/ollie_e000020.safetensors", 0.9)], ok
-        # poids manquant / illisible
+        # a missing / unreadable weight
         ok, err = cz_ui._xyz_validate_axis("LoRA + weight", ["e000010"], vals, ms)
         assert ok is None and "name:weight" in err, (ok, err)
         ok, err = cz_ui._xyz_validate_axis("LoRA + weight", ["e000010:abc"], vals, ms)
@@ -276,15 +276,15 @@ def test_lora_name_apply_and_labels():
                           ("None", None)])]
         jobs, meta = cz_ui._xyz_build_jobs(axes, base_vals, base_ms)
     assert len(jobs) == 3
-    # l'axe "LoRA" conserve le poids courant (0.65)
-    # _path_for_lora = os.path.join -> separateurs mixtes sous Windows, comme pour
-    # les slots LoRA normaux (set_loras s'en accommode).
+    # the "LoRA" axis keeps the current weight (0.65)
+    # _path_for_lora = os.path.join -> mixed separators under Windows, as for
+    # the normal LoRA slots (set_loras copes with it).
     assert jobs[0]["ms"]["loras"] == [
         (os.path.join("D:/loras", "epochs/ollie_e000010.safetensors"), 0.65)], \
         jobs[0]["ms"]["loras"]
-    assert jobs[2]["ms"]["loras"] == []                     # None -> aucun LoRA
+    assert jobs[2]["ms"]["loras"] == []                     # None -> no LoRA
     assert base_ms["loras"] == [("D:/loras/old.safetensors", 0.65)], "snapshot de base intact"
-    # etiquettes : nom de base, sans extension, colonnes distinctes
+    # the labels: the base name, with no extension, distinct columns
     assert meta["x"][1] == ["ollie_e000010", "ollie_e000020", "None"], meta["x"]
     assert len(set(meta["x"][1])) == 3
     assert "LoRA=ollie_e000010" in jobs[0]["label"], jobs[0]["label"]
@@ -305,8 +305,8 @@ def test_lora_name_weight_apply():
 
 
 def test_lora_label_truncates_left():
-    """Les LoRA compares ne different que par leur suffixe : une troncature par la
-    droite rendrait toutes les colonnes identiques."""
+    """The LoRAs being compared differ only by their suffix: a truncation from the
+    right would make every column identical."""
     long_a = "x" * 40 + "_e000010.safetensors"
     long_b = "x" * 40 + "_e000020.safetensors"
     a = cz_ui._xyz_fmt_value("LoRA", (long_a, None))
@@ -319,16 +319,16 @@ def test_lora_label_truncates_left():
 def test_lora_suggestions():
     with _with_fake_loras(_FAKE_LORAS):
         fill, ph = cz_ui._xyz_suggestions("LoRA")
-        # la liste inseree doit se re-parser (le nom a virgule est guillemete)
+        # the inserted list must parse back (the name with a comma is quoted)
         assert cz_ui._xyz_parse_values(fill) == ["None"] + _FAKE_LORAS, fill
         assert "e.g." in ph
         fill_w, _ = cz_ui._xyz_suggestions("LoRA + weight")
         vals = cz_ui._xyz_parse_values(fill_w)
         assert vals[0] == "None" and all(":" in v for v in vals[1:]), vals
-        # chaque suggestion pondere doit repasser la validation
+        # every weighted suggestion must pass the validation again
         ok, err = cz_ui._xyz_validate_axis("LoRA + weight", vals[1:], _base_vals(), {"loras": []})
         assert err is None, err
-    # aucun LoRA disponible -> placeholder explicite, pas de plantage
+    # no LoRA available -> an explicit placeholder, no crash
     with _with_fake_loras([]):
         fill, ph = cz_ui._xyz_suggestions("LoRA")
         assert "no LoRA found" in ph, ph

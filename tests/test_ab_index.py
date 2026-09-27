@@ -1,10 +1,11 @@
-"""Tests du cache de metadonnees de l'Asset Browser (reindexation).
+"""Tests of the Asset Browser's metadata cache (the reindexing).
 
-Regression: chaque ouverture relisait les tags PNG de TOUTES les images
-(~25 ms/image -> 295 s pour 9278 images), au point que le polling du SPA (180 s)
-expirait avant la fin -> "il manque des images".
+A regression: every opening re-read the PNG tags of ALL the images
+(~25 ms/image -> 295 s for 9278 images), to the point that the SPA's polling (180 s)
+timed out before the end -> "there are images missing".
 
 Run:  .venv/Scripts/python tests/test_ab_index.py
+
 """
 import os
 import sys
@@ -25,7 +26,7 @@ def _outdir(n=5, day="2026-07-27"):
     sub = os.path.join(d, day)
     os.makedirs(sub)
     for i in range(n):
-        # format REEL lu par cz_imageio._read_image_meta: chunk PNG 'crispz' = JSON
+        # the REAL format cz_imageio._read_image_meta reads: the 'crispz' PNG chunk = JSON
         info = PngInfo()
         info.add_text("crispz", json.dumps({"prompt": f"prompt {i}", "steps": 8,
                                             "seed": 1000 + i}))
@@ -35,7 +36,7 @@ def _outdir(n=5, day="2026-07-27"):
 
 
 def _count_reads(monkey):
-    """Compte les appels reels a _read_image_meta."""
+    """Counts the real calls to _read_image_meta."""
     calls = []
     real = AB._read_image_meta
 
@@ -67,9 +68,9 @@ def test_modified_image_is_reread():
     try:
         AB.ab_reindex(d, gen_thumbs=False)
         calls.clear()
-        # on modifie UNE image -> elle seule doit etre relue
+        # we modify ONE image -> it alone must be re-read
         target = os.path.join(d, "2026-07-27", "img2.png")
-        time.sleep(1.1)                      # mtime a la seconde
+        time.sleep(1.1)                      # an mtime at the second
         info = PngInfo()
         info.add_text("crispz", json.dumps({"prompt": "nouveau prompt", "seed": 999}))
         Image.new("RGB", (64, 64), (7, 7, 7)).save(target, pnginfo=info)
@@ -113,13 +114,13 @@ def test_corrupt_cache_is_ignored_not_fatal():
     p = os.path.join(d, "_index", "meta_cache.json")
     with open(p, "w", encoding="utf-8") as f:
         f.write("{ ceci n'est pas du json")
-    n, _idx, _j = AB.ab_reindex(d, gen_thumbs=False)   # ne doit pas lever
+    n, _idx, _j = AB.ab_reindex(d, gen_thumbs=False)   # must not raise
     assert n == 3
-    json.load(open(p, encoding="utf-8"))               # reecrit valide
+    json.load(open(p, encoding="utf-8"))               # rewritten, valid
 
 
 # --------------------------------------------------------------------------
-# Index par jour + hook incremental (architecture Fooocus)
+# A per-day index + the incremental hook (the Fooocus architecture)
 # --------------------------------------------------------------------------
 
 def _enable_ab():
@@ -141,10 +142,10 @@ def test_per_day_manifests_and_days_index():
     assert idx["total"] == 5
     assert [x["date"] for x in idx["days"]] == ["2026-07-26", "2026-07-25"]  # recent en tete
     assert [x["count"] for x in idx["days"]] == [3, 2]
-    # chaque jour a son propre manifest, dans son dossier
+    # every day has its own manifest, in its folder
     m = json.load(open(os.path.join(d, "2026-07-26", "manifest.json"), encoding="utf-8"))
     assert m["count"] == 3 and all(e["day"] == "2026-07-26" for e in m["images"])
-    # days.json doit rester minuscule devant le manifest global
+    # days.json must stay tiny next to the global manifest
     assert os.path.getsize(os.path.join(d, "_index", "days.json")) < \
         os.path.getsize(os.path.join(d, "_index", "manifest.json"))
 
@@ -183,8 +184,8 @@ def test_incremental_hook_is_idempotent():
 def test_incremental_hook_never_raises():
     _enable_ab()
     d = tempfile.mkdtemp()
-    # fichier hors du dossier de sortie, fichier inexistant, non-image: tout doit
-    # renvoyer False sans lever (une generation ne doit jamais casser la-dessus).
+    # a file outside the output folder, a file that does not exist, a non-image: all
+    # must return False without raising (a generation must never break on that).
     assert AB.on_image_saved(os.path.join(tempfile.mkdtemp(), "ailleurs.png"),
                              output_dir=d) is False
     assert AB.on_image_saved(os.path.join(d, "absent.png"), output_dir=d) is False
@@ -194,7 +195,7 @@ def test_incremental_hook_never_raises():
 
 
 def test_reindex_and_hook_produce_the_same_entry_shape():
-    """Les deux chemins passent par _entry_for -> memes cles, pas de divergence."""
+    """Both paths go through _entry_for -> the same keys, no divergence."""
     _enable_ab()
     d = tempfile.mkdtemp()
     sub = os.path.join(d, "2026-07-27")

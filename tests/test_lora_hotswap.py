@@ -16,15 +16,15 @@ import cz_pipeline as P  # noqa: E402
 
 
 class FakePipe:
-    """Enregistre les appels LoRA que ferait diffusers, en modelisant le cycle de vie
-    des adaptateurs PEFT: unload_lora_weights ne vide PAS le registre (comportement
-    observe qui declenche 'Already found a peft_config'); seul delete_adapters le fait."""
+    """Records the LoRA calls diffusers would make, modelling the life cycle of the
+    PEFT adapters: unload_lora_weights does NOT empty the registry (an observed
+    behaviour that triggers 'Already found a peft_config'); only delete_adapters does."""
 
     def __init__(self, fail=False, unload_clears=False):
         self.calls = []
         self.fail = fail
         self.unload_clears = unload_clears
-        self.adapters = {}          # nom -> weight_name (registre PEFT simule)
+        self.adapters = {}          # name -> weight_name (a simulated PEFT registry)
 
     def unload_lora_weights(self):
         self.calls.append(("unload",))
@@ -77,7 +77,7 @@ def test_weight_only_change_uses_set_adapters():
     _reset([(a, 1.0)], [(a, 0.4)])
     pipe = FakePipe()
     assert P._apply_loras(pipe) is True
-    # seulement une re-ponderation: pas de unload, pas de rechargement du fichier
+    # only a re-weighting: no unload, no reloading of the file
     assert pipe.calls == [("set_adapters", ("cz_lora_0",), (0.4,))]
     assert P._APPLIED_LORAS == [(a, 0.4)]
 
@@ -100,7 +100,7 @@ def test_removing_all_loras_unloads():
     _reset([(a, 1.0)], [])
     pipe = FakePipe()
     assert P._apply_loras(pipe) is True
-    assert pipe.calls == [("unload",)]          # plus rien a poser
+    assert pipe.calls == [("unload",)]          # nothing left to apply
     assert P._APPLIED_LORAS == []
 
 
@@ -112,22 +112,22 @@ def test_missing_file_is_ignored():
 
 
 def test_swap_leaves_only_the_new_adapter_registered():
-    """Regression 'Already found a peft_config': apres un swap A -> B, le registre PEFT ne
-    doit contenir QUE B. unload_lora_weights ne vidant pas (unload_clears=False),
-    _clear_loras doit supprimer explicitement l'ancien adaptateur avant de recharger."""
+    """The 'Already found a peft_config' regression: after an A -> B swap, the PEFT registry
+    must hold ONLY B. As unload_lora_weights does not empty it (unload_clears=False),
+    _clear_loras must delete the old adapter explicitly before reloading."""
     d = tempfile.mkdtemp()
     a, b = _lora_file(d, "a.safetensors"), _lora_file(d, "b.safetensors")
-    pipe = FakePipe(unload_clears=False)      # comme diffusers 0.39 (peft_config residuel)
-    # etat 1: A pose
+    pipe = FakePipe(unload_clears=False)      # like diffusers 0.39 (a residual peft_config)
+    # state 1: A applied
     _reset([], [(a, 1.0)])
     assert P._apply_loras(pipe, force=True) is True
     assert set(pipe.adapters) == {"cz_lora_0"} and pipe.adapters["cz_lora_0"] == "a.safetensors"
-    # etat 2: swap vers B
+    # state 2: a swap to B
     _reset([(a, 1.0)], [(b, 0.8)])
     assert P._apply_loras(pipe) is True
-    assert ("delete", ("cz_lora_0",)) in pipe.calls        # l'ancien a bien ete supprime
+    assert ("delete", ("cz_lora_0",)) in pipe.calls        # the old one really was deleted
     assert set(pipe.adapters) == {"cz_lora_0"} and pipe.adapters["cz_lora_0"] == "b.safetensors"
-    # pas d'accumulation: un seul adaptateur, pointant sur B
+    # no accumulation: a single adapter, pointing at B
     assert len(pipe.adapters) == 1
 
 
@@ -136,9 +136,9 @@ def test_removing_all_clears_the_registry():
     a = _lora_file(d, "a.safetensors")
     pipe = FakePipe(unload_clears=False)
     _reset([], [(a, 1.0)]); P._apply_loras(pipe, force=True)
-    _reset([(a, 1.0)], [])                     # on enleve toutes les LoRA
+    _reset([(a, 1.0)], [])                     # we remove every LoRA
     assert P._apply_loras(pipe) is True
-    assert pipe.adapters == {}                 # registre vide, rien ne traine
+    assert pipe.adapters == {}                 # an empty registry, nothing left lying around
 
 
 def test_failure_returns_false_for_full_reload_fallback():
@@ -146,12 +146,12 @@ def test_failure_returns_false_for_full_reload_fallback():
     a = _lora_file(d, "a.safetensors")
     _reset([], [(a, 1.0)])
     pipe = FakePipe(fail=True)
-    assert P._apply_loras(pipe) is False        # -> le caller fera free_vram + reload
+    assert P._apply_loras(pipe) is False        # -> the caller will do free_vram + a reload
     assert P._APPLIED_LORAS == []
 
 
 def test_set_loras_does_not_free_the_pipe():
-    """Le coeur du fix: set_loras ne doit PLUS invalider le pipeline charge."""
+    """The heart of the fix: set_loras must NO LONGER invalidate the loaded pipeline."""
     d = tempfile.mkdtemp()
     a = _lora_file(d, "a.safetensors")
     P.LORAS = []
@@ -166,7 +166,7 @@ def test_set_loras_does_not_free_the_pipe():
 
 
 def test_base_cache_key_excludes_loras():
-    """La cle de cache ne doit plus dependre des LoRA (sinon reload a chaque changement)."""
+    """The cache key must no longer depend on the LoRAs (otherwise a reload on every change)."""
     import inspect
     src = inspect.getsource(P._ensure_base)
     assert "tuple(LORAS)" not in src, "les LoRA ne doivent pas faire partie de la cle de cache"

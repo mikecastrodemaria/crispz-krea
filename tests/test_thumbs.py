@@ -39,9 +39,9 @@ def test_force_rebuilds_everything_then_skips():
     assert len(jobs) == 6
     r1 = AB._ab_gen_thumbs(jobs, 128, 85, force=True)
     assert r1 == {"total": 6, "made": 6, "skipped": 0, "failed": 0}
-    r2 = AB._ab_gen_thumbs(jobs, 128, 85, force=False)      # a jour -> tout saute
+    r2 = AB._ab_gen_thumbs(jobs, 128, 85, force=False)      # up to date -> everything is skipped
     assert r2["skipped"] == 6 and r2["made"] == 0
-    r3 = AB._ab_gen_thumbs(jobs, 128, 85, force=True)       # force -> tout refait
+    r3 = AB._ab_gen_thumbs(jobs, 128, 85, force=True)       # force -> everything redone
     assert r3["made"] == 6
 
 
@@ -52,7 +52,7 @@ def test_progress_is_called_once_per_file():
     AB._ab_gen_thumbs(jobs, 128, 85, force=True, progress=lambda i, n, name: seen.append((i, n)))
     assert len(seen) == 5
     assert all(n == 5 for _i, n in seen)
-    assert sorted(i for i, _n in seen) == [1, 2, 3, 4, 5]   # compteur strictement croissant
+    assert sorted(i for i, _n in seen) == [1, 2, 3, 4, 5]   # a strictly growing counter
 
 
 def test_parallel_and_serial_give_the_same_result():
@@ -66,22 +66,22 @@ def test_parallel_and_serial_give_the_same_result():
 
 
 def test_model_jobs_need_a_preview():
-    # Hermetique: le layout des miniatures depend du cache configure (prefs machine).
-    # On force les deux modes explicitement au lieu de subir preferences.json.
+    # Hermetic: the thumbnails' layout depends on the configured cache (machine prefs).
+    # We force both modes explicitly instead of suffering preferences.json.
     out = tempfile.mkdtemp()
     md = _models_dir(4, previews=True)
     old = AB._prefs.get("ab_cache_dir")
     try:
-        AB._prefs["ab_cache_dir"] = "output"          # ancien layout a cote des images
+        AB._prefs["ab_cache_dir"] = "output"          # the old layout next to the images
         jobs = AB._thumb_jobs_for("loras", out, loras_dir=md)
         assert len(jobs) == 4
         assert all(s.endswith(".preview.png") for s, _t in jobs)
         assert all("/thumbs/loras/" in t.replace("\\", "/") for _s, t in jobs)
-        AB._prefs["ab_cache_dir"] = tempfile.mkdtemp()  # cache dedie (defaut app-folder)
+        AB._prefs["ab_cache_dir"] = tempfile.mkdtemp()  # a dedicated cache (the app-folder default)
         jobs = AB._thumb_jobs_for("loras", out, loras_dir=md)
         assert all("/crispz-thumbs/" in t.replace("\\", "/") and "/loras/" in t.replace("\\", "/")
                    for _s, t in jobs)
-        # sans preview -> rien a miniaturiser (pas d'erreur)
+        # with no preview -> nothing to make a thumbnail of (no error)
         md2 = _models_dir(3, previews=False)
         assert AB._thumb_jobs_for("models", out, checkpoints_dir=md2) == []
     finally:
@@ -101,10 +101,10 @@ def test_broken_source_counts_as_failed_not_crash():
     d = _outputs_dir(2)
     day = os.path.join(d, "2026-07-15")
     with open(os.path.join(day, "broken.png"), "wb") as f:
-        f.write(b"not an image")          # PIL va echouer dessus
+        f.write(b"not an image")          # PIL is going to fail on it
     jobs = AB._thumb_jobs_for("outputs", d)
     r = AB._ab_gen_thumbs(jobs, 128, 85, force=True)
-    assert r["failed"] == 1 and r["made"] == 2, r      # le lot continue malgre l'echec
+    assert r["failed"] == 1 and r["made"] == 2, r      # the batch carries on despite the failure
 
 
 def test_rebuild_thumbs_returns_summary_with_kind():

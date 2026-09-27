@@ -33,20 +33,20 @@ def test_apply_shard_partition():
     s1 = B._apply_shard(files, "2/3")
     s2 = B._apply_shard(files, "3/3")
     assert sorted(s0 + s1 + s2) == sorted(files)          # partition complete
-    assert not (set(s0) & set(s1)) and not (set(s1) & set(s2))  # disjointe
+    assert not (set(s0) & set(s1)) and not (set(s1) & set(s2))  # disjoint
     assert B._apply_shard(files, None) == files
-    assert B._apply_shard(files, "9/3") == files          # invalide -> inchange
+    assert B._apply_shard(files, "9/3") == files          # invalid -> unchanged
 
 
 def test_needs_enrich():
     d = tempfile.mkdtemp()
-    a = _mk(d, "a.safetensors")                            # rien -> a besoin
-    b = _mk(d, "b.safetensors", sidecar=True, preview=True)  # complet -> pas besoin
-    c = _mk(d, "c.safetensors", sidecar=True)              # sidecar sans preview -> besoin
+    a = _mk(d, "a.safetensors")                            # nothing -> it needs it
+    b = _mk(d, "b.safetensors", sidecar=True, preview=True)  # complete -> no need
+    c = _mk(d, "c.safetensors", sidecar=True)              # a sidecar with no preview -> needed
     assert B._needs_enrich(a, overwrite=False) is True
     assert B._needs_enrich(b, overwrite=False) is False
     assert B._needs_enrich(c, overwrite=False) is True
-    assert B._needs_enrich(b, overwrite=True) is True      # force -> toujours
+    assert B._needs_enrich(b, overwrite=True) is True      # force -> always
 
 
 def test_collect_files_and_shard():
@@ -57,7 +57,7 @@ def test_collect_files_and_shard():
     _mk(os.path.join(d, "sub"), "m3.safetensors")
     files = B.collect_files("loras", loras_dir=d)
     names = sorted(os.path.basename(f) for f in files)
-    assert names == ["m1.safetensors", "m2.safetensors", "m3.safetensors"]  # recursif, .txt exclu
+    assert names == ["m1.safetensors", "m2.safetensors", "m3.safetensors"]  # recursive, .txt excluded
 
 
 def test_enrich_accounting(monkeypatch):
@@ -72,7 +72,7 @@ def test_enrich_accounting(monkeypatch):
         return {"success": True, "message": "ok", "update_available": False}
 
     def fake_refresh(path, api_key=None):
-        return {"success": True, "update_available": True}   # b a une nouvelle version
+        return {"success": True, "update_available": True}   # b has a new version
 
     monkeypatch.setattr(cz_civitai, "fetch_civitai_for_model", fake_fetch)
     monkeypatch.setattr(cz_civitai, "refresh_update_flag", fake_refresh)
@@ -85,8 +85,8 @@ def test_enrich_accounting(monkeypatch):
     assert s["enriched"] == 1 and s["failed"] == 1          # a ok, c failed
     assert s["skipped"] == 1 and s["updated"] == 1          # b skip + newer version
     assert any(w.startswith("c.safetensors") for w in s["warnings"])
-    assert len(seen) >= 3                                    # progress appele par fichier
-    # a et c sans reseau reel: le mock a bien ete utilise (pas d'appel HTTP)
+    assert len(seen) >= 3                                    # progress called per file
+    # a and c with no real network: the mock was indeed used (no HTTP call)
 
 
 def test_resolve_dirs_arg_priority():
@@ -96,7 +96,7 @@ def test_resolve_dirs_arg_priority():
 
 
 if __name__ == "__main__":
-    # mini-shim monkeypatch (sans pytest)
+    # a mini monkeypatch shim (without pytest)
     class _MP:
         def __init__(self): self._undo = []
         def setattr(self, obj, name, val):

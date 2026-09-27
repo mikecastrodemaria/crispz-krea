@@ -1,15 +1,16 @@
-"""Encoder un prompt deplace l'encodeur Qwen3 sur le GPU. Le faire deux fois pour
-le meme texte est du transfert pur.
+"""Encoding a prompt moves the Qwen3 encoder onto the GPU. Doing it twice for
+the same text is pure transfer.
 
-En offload 'model' ce cout est paye a CHAQUE appel de pipeline. Le detailer le
-paie une fois par main, avec le MEME prompt (vide par defaut). Mesure sur
-klein-9B GGUF, passe de main a 4 steps: prompt+setup 5,8 s pour 0,3 s de
-diffusion -- le calcul avait disparu, restait le deplacement des poids.
+In 'model' offload that cost is paid on EVERY pipeline call. The detailer pays
+it once per hand, with the SAME prompt (empty by default). Measured on
+klein-9B GGUF, a hand pass at 4 steps: prompt+setup 5.8 s for 0.3 s of
+diffusion -- the computation had disappeared, what was left was moving the weights.
 
-encode_prompt() court-circuite l'encodeur des qu'on lui passe prompt_embeds.
-Aucun modele n'est charge ici: le pipeline est un faux.
+encode_prompt() short-circuits the encoder as soon as it is passed prompt_embeds.
+No model is loaded here: the pipeline is a fake.
 
 Run:  .venv/Scripts/python tests/test_prompt_embed_cache.py
+
 """
 import os
 import sys
@@ -22,7 +23,7 @@ import cz_pipeline as P
 
 
 class FakePipe:
-    """Compte les encodages et retient ce que __call__ a recu."""
+    """Counts the encodings and remembers what __call__ received."""
 
     config = type("c", (), {"is_distilled": True})()
     _execution_device = "cpu"
@@ -72,7 +73,7 @@ def test_a_different_prompt_is_encoded():
 
 
 def test_freeing_vram_clears_the_cache():
-    """Un embedding calcule par un AUTRE encodeur serait faux."""
+    """An embedding computed by ANOTHER encoder would be wrong."""
     _fresh()
     pipe = FakePipe()
     P._flux_call(pipe, prompt="a lighthouse")
@@ -84,7 +85,7 @@ def test_freeing_vram_clears_the_cache():
 
 
 def test_an_encoder_failure_never_breaks_the_render():
-    """Regle maison: un cache ne doit jamais couter un rendu."""
+    """A house rule: a cache must never cost a render."""
     _fresh()
     pipe = FakePipe(boom=True)
     out = P._flux_call(pipe, prompt="a lighthouse")
@@ -116,7 +117,7 @@ def test_the_cache_is_bounded():
 
 
 def test_an_explicit_prompt_embeds_wins():
-    """Un appelant qui fournit deja ses embeddings n'est pas contredit."""
+    """A caller that already supplies its embeddings is not contradicted."""
     _fresh()
     pipe = FakePipe()
     mine = torch.ones(1, 4, 8)
@@ -129,8 +130,8 @@ def test_an_explicit_prompt_embeds_wins():
 
 
 def test_every_returned_tensor_is_carried():
-    """encode_prompt ne renvoie pas qu'un tenseur selon la famille (masque chez
-    Qwen/Krea2, pooled chez Flux). Les oublier ferait planter __call__."""
+    """encode_prompt does not return a single tensor in every family (a mask on
+    Qwen/Krea2, a pooled one on Flux). Forgetting them would make __call__ crash."""
     _fresh()
     pipe = FakePipe()
     P._flux_call(pipe, prompt="a lighthouse")

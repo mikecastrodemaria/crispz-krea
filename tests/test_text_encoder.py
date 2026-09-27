@@ -1,38 +1,39 @@
-"""Encodeurs texte de remplacement (Models > Checkpoints > Text encoder T5 / CLIP).
+"""Replacement text encoders (Models > Checkpoints > Text encoder T5 / CLIP).
 
-FLUX.1 Krea a DEUX encodeurs, chacun son composant diffusers et son choix:
-  text_encoder_2 = T5-XXL (T5EncoderModel) -> prompt_embeds, la sequence que lit le
-                   transformer (4096 de large, 24 couches);
-  text_encoder   = CLIP-L (CLIPTextModel)  -> pooled_prompt_embeds (768, 12 couches).
-Un autre encodeur ne se branche que s'il a la meme famille, la meme largeur et le meme
-nombre de couches que le MEME composant du repo de base, et le refus doit le dire AVANT
-de lire 9 Go de T5.
+FLUX.1 Krea has TWO encoders, each with its diffusers component and its own choice:
+  text_encoder_2 = T5-XXL (T5EncoderModel) -> prompt_embeds, the sequence the
+                   transformer reads (4096 wide, 24 layers);
+  text_encoder   = CLIP-L (CLIPTextModel)  -> pooled_prompt_embeds (768, 12 layers).
+Another encoder only plugs in when it has the same family, the same width and the same
+number of layers as the SAME component of the base repo, and the refusal must say so BEFORE
+reading 9 GB of T5.
 
-Ces tests verrouillent aussi ce qui rendrait l'option dangereuse en silence:
-  - un changement d'encodeur vide le cache d'embeddings, et les DEUX encodeurs sont dans
-    la CLE du cache (elle ne contenait que id(pipe.text_encoder), le CLIP, alors que
-    c'est le T5 qui produit prompt_embeds);
-  - _ensure_base passe l'encodeur a from_pretrained et, au moindre probleme, retombe
-    sur celui du repo sans perdre la generation;
-  - les pipes derives (img2img, inpaint: from_pipe) partagent les encodeurs du base;
-  - les metadonnees nomment les encodeurs qui ont REELLEMENT tourne, par leur nom de
-    dossier et jamais par leur chemin (qui finirait dans les PNG partages);
-  - l'UI ne memorise qu'un encodeur valide; la file garde ceux du job.
+These tests also lock down what would make the option silently dangerous:
+  - a change of encoder empties the embeddings cache, and BOTH encoders are in
+    the cache KEY (it only held id(pipe.text_encoder), the CLIP, whereas
+    it is the T5 that produces prompt_embeds);
+  - _ensure_base passes the encoder to from_pretrained and, at the slightest problem, falls
+    back on the repo's without losing the generation;
+  - the derived pipes (img2img, inpaint: from_pipe) share the base's encoders;
+  - the metadata names the encoders that REALLY ran, by their folder
+    name and never by their path (which would end up in the shared PNGs);
+  - the UI only remembers a valid encoder; the queue keeps the job's.
 
-Aucun modele reel, aucun reseau, aucun GPU: configs factices, pipelines factices ou
-minuscules (quelques Ko de poids aleatoires).
+No real model, no network, no GPU: dummy configs, dummy or tiny pipelines
+(a few KB of random weights).
 
 Run:  .venv/Scripts/python tests/test_text_encoder.py
+
 """
 import json
 import os
 import sys
 import tempfile
 
-# Jamais de reseau, meme par accident: huggingface_hub lit ceci a l'import.
+# Never any network, not even by accident: huggingface_hub reads this at import time.
 os.environ["HF_HUB_OFFLINE"] = "1"
-# Jamais de GPU non plus: get_pipe deplacerait le pipeline minuscule sur cuda. '-1' et
-# non '': sous Windows, une variable vide ne masque pas le GPU.
+# Never any GPU either: get_pipe would move the tiny pipeline onto cuda. '-1' and
+# not '': under Windows, an empty variable does not hide the GPU.
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,10 +49,10 @@ T5XXL = {"model_type": "t5", "d_model": 4096, "num_layers": 24,
          "architectures": ["T5EncoderModel"]}
 CLIPL = {"model_type": "clip_text_model", "hidden_size": 768, "num_hidden_layers": 12,
          "architectures": ["CLIPTextModel"]}
-BASE = {T5: T5XXL, CLIP: CLIPL}          # ce que dit black-forest-labs/FLUX.1-Krea-dev
+BASE = {T5: T5XXL, CLIP: CLIPL}          # what black-forest-labs/FLUX.1-Krea-dev says
 NONE = dict.fromkeys(P.TEXT_ENCODER_COMPONENTS, "")
 
-_TMP = tempfile.TemporaryDirectory(prefix="crispz_te_")   # tout est efface a la sortie
+_TMP = tempfile.TemporaryDirectory(prefix="crispz_te_")   # everything is erased on the way out
 
 
 def _mkdtemp(prefix):
@@ -59,7 +60,7 @@ def _mkdtemp(prefix):
 
 
 def _folder(cfg, sub=None, name="enc", root=None):
-    """Dossier d'encodeur factice: un config.json, a la racine ou dans `sub`."""
+    """A dummy encoder folder: one config.json, at the root or in `sub`."""
     d = os.path.join(root or _mkdtemp("te_"), name)
     p = os.path.join(d, sub) if sub else d
     os.makedirs(p, exist_ok=True)
@@ -69,8 +70,8 @@ def _folder(cfg, sub=None, name="enc", root=None):
 
 
 class _Base:
-    """Remplace la lecture des configs d'encodeur du repo de base (pas de reseau, pas de
-    HF) et retient quels composants ont ete demandes."""
+    """Replaces the reading of the base repo's encoder configs (no network, no
+    HF) and remembers which components were asked for."""
 
     def __init__(self, cfgs=BASE):
         self.cfgs, self.asked = cfgs, []
@@ -89,7 +90,7 @@ class _Base:
 
 
 class _Dirs:
-    """Les listes ne voient que `te_dir` et `extra`, jamais les vrais dossiers du poste."""
+    """The listings only see `te_dir` and `extra`, never the machine's real folders."""
 
     def __init__(self, te_dir="", extra=""):
         self.new = (te_dir, "", extra)
@@ -105,15 +106,15 @@ class _Dirs:
 def test_same_architecture_is_accepted():
     with _Base():
         assert P._text_encoder_problem(_folder(T5XXL), T5) is None
-        # copie d'un repo diffusers: le T5 est dans text_encoder_2/, le CLIP dans text_encoder/
+        # a copy of a diffusers repo: the T5 is in text_encoder_2/, the CLIP in text_encoder/
         assert P._text_encoder_problem(_folder(T5XXL, T5), T5) is None
         assert P._text_encoder_problem(_folder(CLIPL, CLIP), CLIP) is None
         assert P._text_encoder_problem(_folder(CLIPL), CLIP) is None
-        # T5ForConditionalGeneration complet: T5EncoderModel n'en lit que l'encodeur
+        # a complete T5ForConditionalGeneration: T5EncoderModel only reads its encoder
         full_t5 = {**T5XXL, "architectures": ["T5ForConditionalGeneration"],
                    "num_decoder_layers": 24}
         assert P._text_encoder_problem(_folder(full_t5), T5) is None
-        # CLIPModel complet (texte + vision), forme usuelle d'un CLIP-L fine-tune
+        # a complete CLIPModel (text + vision), the usual shape of a fine-tuned CLIP-L
         full_clip = {"model_type": "clip", "architectures": ["CLIPModel"],
                      "text_config": {"hidden_size": 768, "num_hidden_layers": 12},
                      "vision_config": {"hidden_size": 1024, "num_hidden_layers": 24}}
@@ -122,8 +123,8 @@ def test_same_architecture_is_accepted():
 
 
 def test_each_slot_is_checked_against_its_own_base_component():
-    """Le T5 se compare au text_encoder_2 du repo, le CLIP au text_encoder: le meme
-    dossier convient a l'un et pas a l'autre."""
+    """The T5 is compared with the repo's text_encoder_2, the CLIP with the text_encoder: the same
+    folder suits one and not the other."""
     t5 = _folder(T5XXL)
     with _Base() as b:
         assert P._text_encoder_problem(t5, T5) is None
@@ -158,7 +159,7 @@ def test_gguf_single_file_and_empty_folder_are_refused_with_the_reason():
         assert "FOLDER" in P._text_encoder_problem(r"F:\x\clip_l.safetensors", CLIP)
         why = P._text_encoder_problem(_mkdtemp("empty_"), T5)
         assert "config.json" in why and "text_encoder_2/" in why, why
-        # un chemin d'une autre machine n'est jamais pris pour un repo HF
+        # a path from another machine is never taken for an HF repo
         assert "neither" in P._text_encoder_problem("/home/someone/t5xxl", T5)
     print("OK test_gguf_single_file_and_empty_folder_are_refused_with_the_reason")
 
@@ -184,7 +185,7 @@ def test_the_class_and_the_config_come_from_the_same_base_component():
     assert P._encoder_class(base, CLIP).__name__ == "CLIPTextModel"
     assert P._base_text_encoder_config(base, T5)["d_model"] == 4096
     assert P._base_text_encoder_config(base, CLIP)["hidden_size"] == 768
-    # local_only: un repo absent du cache rend None, sans reseau
+    # local_only: a repo absent from the cache returns None, with no network
     assert P._base_text_encoder_config("nobody/not-a-repo", T5, local_only=True) is None
     print("OK test_the_class_and_the_config_come_from_the_same_base_component")
 
@@ -201,11 +202,11 @@ def test_changing_an_encoder_frees_the_pipe_and_the_cache():
         assert P._BASE_PIPE is None, "le pipeline doit etre libere"
         assert not P._EMBED_CACHE, "les anciens encodages resteraient servis"
         assert not any(P._TEXT_ENCODER_ACTIVE.values()), "free_vram garde l'ancien encodeur"
-        # meme valeur: rien ne bouge, pas de rechargement inutile
+        # the same value: nothing moves, no pointless reload
         sentinel = P._BASE_PIPE = object()
         P.set_text_encoder(T5, r"D:\enc\t5xxl-abl")
         assert P._BASE_PIPE is sentinel
-        # l'autre composant se change a part, et libere aussi
+        # the other component changes apart, and frees as well
         P.set_text_encoder(CLIP, r"D:\enc\clip-gmp")
         assert P._BASE_PIPE is None and P.TEXT_ENCODER[T5] == r"D:\enc\t5xxl-abl"
         try:
@@ -221,7 +222,7 @@ def test_changing_an_encoder_frees_the_pipe_and_the_cache():
 
 
 class FakePipe:
-    """Deux encodeurs, comme FluxPipeline; compte les encodages."""
+    """Two encoders, like FluxPipeline; it counts the encodings."""
 
     def __init__(self):
         self.text_encoder = object()        # CLIP
@@ -235,7 +236,7 @@ class FakePipe:
 
 
 def test_the_embed_key_carries_both_encoders():
-    """Meme prompt, meme pipe: un autre T5 OU un autre CLIP = un autre encodage."""
+    """The same prompt, the same pipe: another T5 OR another CLIP = another encoding."""
     P._embed_cache_clear()
     old = dict(P._TEXT_ENCODER_ACTIVE)
     try:
@@ -250,7 +251,7 @@ def test_the_embed_key_carries_both_encoders():
         P._TEXT_ENCODER_ACTIVE = {T5: r"D:\enc\t5xxl-abl", CLIP: r"D:\enc\clip-gmp"}
         P._cached_prompt_embeds(pipe, "p", {})
         assert pipe.n == 3, "un encodage de l'ancien CLIP a ete resservi"
-        # le T5 du pipe remplace par un autre objet: l'ancienne cle ne voyait que le CLIP
+        # the pipe's T5 replaced by another object: the old key only saw the CLIP
         keep = pipe.text_encoder_2
         pipe.text_encoder_2 = object()
         P._cached_prompt_embeds(pipe, "p", {})
@@ -272,7 +273,7 @@ def test_metadata_names_the_encoders_that_ran_and_never_their_paths():
         assert m["text_encoder_t5"] == "t5xxl-abliterated", m
         assert m["text_encoder_clip"] == "flux-copy", m
         assert "someone" not in json.dumps(m), "chemin local dans les metadonnees"
-        # T5 ecarte au chargement, CLIP applique: chacun son champ
+        # the T5 discarded at load time, the CLIP applied: each one its field
         P._TEXT_ENCODER_ACTIVE = {T5: "", CLIP: clip}
         m = P._gen_meta("txt2img", "p")
         assert "text_encoder_t5" not in m, m
@@ -297,19 +298,19 @@ def test_each_list_offers_the_folders_that_fit_its_slot():
     root = _mkdtemp("tes_")
     t5 = _folder(T5XXL, name="t5xxl-abliterated", root=root)
     clip = _folder(CLIPL, name="clip-gmp", root=root)
-    flux = _folder(T5XXL, sub=T5, name="flux-krea-copy", root=root)   # copie diffusers
+    flux = _folder(T5XXL, sub=T5, name="flux-krea-copy", root=root)   # a diffusers copy
     _folder(CLIPL, sub=CLIP, name="flux-krea-copy", root=root)
     os.makedirs(os.path.join(root, "empty"))
     with _Dirs(te_dir=root):
         with _Base():
             got_t5, got_clip = P.list_text_encoders(T5), P.list_text_encoders(CLIP)
-        with _Base({}):             # config du repo illisible hors ligne: pas de tri
+        with _Base({}):             # the repo's config unreadable offline: no sorting
             got_unsorted = P.list_text_encoders(T5)
     assert t5 in got_t5 and flux in got_t5 and clip not in got_t5, got_t5
     assert clip in got_clip and flux in got_clip and t5 not in got_clip, got_clip
     assert t5 in got_unsorted and clip in got_unsorted, got_unsorted
     assert not [f for f in got_t5 + got_clip + got_unsorted if f.endswith("empty")]
-    # a cote du dossier de checkpoints EXTRA (bibliotheque sur un autre disque)
+    # next to the EXTRA checkpoints folder (a library on another disk)
     lib = _mkdtemp("lib_")
     os.makedirs(os.path.join(lib, "checkpoints"))
     far = _folder(T5XXL, name="t5-far", root=os.path.join(lib, "text_encoders"))
@@ -319,7 +320,7 @@ def test_each_list_offers_the_folders_that_fit_its_slot():
 
 
 class _FakeFlux:
-    """Tient lieu de diffusers.FluxPipeline: retient ce que from_pretrained a recu."""
+    """Stands in for diffusers.FluxPipeline: it remembers what from_pretrained received."""
     calls = []
 
     @classmethod
@@ -369,7 +370,7 @@ def test_ensure_base_passes_the_encoders_and_never_loses_the_render():
         m = P._gen_meta("txt2img", "p")
         assert m["text_encoder_t5"] == "t5xxl-abliterated", m
         assert m["text_encoder_clip_not_applied"] == "clip-broken", m
-        # un T5 trop etroit: refuse a la config, jamais lu, et la generation continue
+        # a T5 that is too narrow: refused at the config, never read, and the generation carries on
         tried.clear()
         P.free_vram()
         P.TEXT_ENCODER = {T5: _folder({**T5XXL, "d_model": 2048}, name="t5-xl"), CLIP: ""}
@@ -388,9 +389,9 @@ def test_ensure_base_passes_the_encoders_and_never_loses_the_render():
 
 
 def test_derived_pipes_share_the_encoders():
-    """img2img et inpaint derivent du base par from_pipe (get_pipe): ils doivent reprendre
-    SES encodeurs -- donc ceux de remplacement -- et non en recharger d'autres. Pipeline
-    FLUX minuscule, poids aleatoires, CPU: rien n'est lu sur disque."""
+    """img2img and inpaint derive from the base through from_pipe (get_pipe): they must take
+    ITS encoders -- so the replacement ones -- and not reload others. A tiny
+    FLUX pipeline, random weights, the CPU: nothing is read from the disk."""
     from diffusers import (AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxPipeline,
                            FluxTransformer2DModel)
     from transformers import CLIPTextConfig, CLIPTextModel, T5Config, T5EncoderModel
@@ -435,19 +436,19 @@ def test_the_ui_saves_only_an_encoder_that_fits():
     saved = []
     old = (dict(P.TEXT_ENCODER), U._save_prefs_keys)
     try:
-        U._save_prefs_keys = saved.append          # jamais le vrai preferences.json
+        U._save_prefs_keys = saved.append          # never the real preferences.json
         P.TEXT_ENCODER = dict(NONE)
         with _Base(), _Dirs():
-            msg = U._ui_set_text_encoder(CLIP, _folder(T5XXL))     # un T5 dans le slot CLIP
+            msg = U._ui_set_text_encoder(CLIP, _folder(T5XXL))     # a T5 in the CLIP slot
             assert "not applied" in msg and "CLIP" in msg, msg
             assert saved == [] and P.TEXT_ENCODER[CLIP] == "", saved
             good = _folder(T5XXL, name="t5xxl-abliterated")
             msg = U._ui_set_text_encoder(T5, good)
             assert saved == [{T5: good}] and P.TEXT_ENCODER[T5] == good, saved
             assert "t5xxl-abliterated" in msg and "reloads" in msg, msg
-            U._ui_set_text_encoder(T5, "")        # retour au defaut: toujours permis
+            U._ui_set_text_encoder(T5, "")        # back to the default: always allowed
             assert saved[-1] == {T5: ""} and P.TEXT_ENCODER[T5] == "", saved
-            # une valeur collee (repo HF) reste proposee dans le dropdown
+            # a pasted value (an HF repo) stays offered in the dropdown
             P.TEXT_ENCODER[CLIP] = "someone/clip-l-finetune"
             ch = U._te_choices(CLIP)
         assert ch[0] == ("Default (base repo's own CLIP)", ""), ch
@@ -468,7 +469,7 @@ def test_the_queue_keeps_the_encoders():
         P.set_text_encoder = lambda c, s: calls.append((c, s))
         U._q_restore_model_state(ms)
         assert sorted(calls) == [(CLIP, ""), (T5, r"D:\enc\t5xxl-abl")], calls
-        # snapshot d'avant l'option: on ne touche pas aux encodeurs courants
+        # a snapshot from before the option: we do not touch the current encoders
         calls.clear()
         U._q_restore_model_state({k: v for k, v in ms.items() if k not in (T5, CLIP)})
         assert calls == [], calls
@@ -486,8 +487,8 @@ def test_the_config_sample_documents_the_keys():
 
 
 def test_default_picked_in_the_ui_survives_a_restart():
-    """Choisir "Default" ecrit "" dans les preferences: au redemarrage, une valeur de
-    config.txt ne doit pas revenir par-dessus. L'environnement gagne toujours."""
+    """Choosing "Default" writes "" into the preferences: on a restart, a value from
+    config.txt must not come back over it. The environment always wins."""
     old = (P._prefs, P.CONFIG)
     env = "KREA_TEXT_ENCODER_2_PROBE"
     try:
@@ -508,9 +509,9 @@ def test_default_picked_in_the_ui_survives_a_restart():
 
 
 def test_compatible_encoders_in_the_hf_cache_are_listed_per_component():
-    """Un encodeur telecharge depuis HF vit dans le cache HF: la liste de SON composant doit
-    le montrer. Pas un pipeline diffusers, pas une config sans poids, pas une autre taille,
-    pas une config sans taille (un VAE, un upscaler), et un CLIP complet vaut pour le CLIP."""
+    """An encoder downloaded from HF lives in the HF cache: ITS component's list must
+    show it. Not a diffusers pipeline, not a config with no weights, not another size,
+    not a config with no size (a VAE, an upscaler), and a complete CLIP counts for the CLIP."""
     import json as _json
     import os as _os
     import tempfile as _tempfile

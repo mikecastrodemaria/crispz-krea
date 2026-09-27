@@ -14,7 +14,7 @@ import cz_pipeline as czp  # noqa: E402
 
 
 def _stub_outpaint(image, mask, directions, prompt, steps, seed, strength=1.0, expand=0.3):
-    """Reproduit UNIQUEMENT le padding geometrique d'outpaint_directions (pas de GPU)."""
+    """Reproduces ONLY outpaint_directions' geometric padding (no GPU)."""
     import numpy as np
     img = np.array(image.convert("RGB"))
     H, W = img.shape[:2]
@@ -34,17 +34,17 @@ def test_extend_reaches_target_ratio():
     old = czp.outpaint_directions
     czp.outpaint_directions = _stub_outpaint
     old_dn = czp.EXTEND_DENOISE
-    czp.EXTEND_DENOISE = 0.0        # pas de passe de fusion GPU dans le test
+    czp.EXTEND_DENOISE = 0.0        # no GPU merge pass in the test
     try:
-        # portrait 512x768 -> 16:9 : elargit, ne coupe rien
+        # a 512x768 portrait -> 16:9 : it widens, it cuts nothing
         out = czp._extend_to_ratio(Image.new("RGB", (512, 768)), 16, 9, "", 6, 1)
-        assert out.size[1] == 768                      # hauteur intacte
+        assert out.size[1] == 768                      # the height intact
         assert abs(out.size[0] / out.size[1] - 16 / 9) < 0.02
-        # paysage 1024x512 -> 1:1 : etend en hauteur
+        # a 1024x512 landscape -> 1:1 : extends in height
         out = czp._extend_to_ratio(Image.new("RGB", (1024, 512)), 1, 1, "", 6, 1)
         assert out.size[0] == 1024
         assert abs(out.size[0] / out.size[1] - 1.0) < 0.02
-        # deja au ratio -> intact, zero outpaint
+        # already at the ratio -> intact, zero outpaint
         out = czp._extend_to_ratio(Image.new("RGB", (1024, 1024)), 1, 1, "", 6, 1)
         assert out.size == (1024, 1024)
     finally:

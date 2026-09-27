@@ -55,7 +55,7 @@ def _swap_env(monkey_new, offload="none", loras=None):
     P.OFFLOAD_MODE = offload
     P.LORAS = list(loras or [])
     P._APPLIED_LORAS = []
-    P._DERIVED = {"img2img": object()}          # doit etre vide apres le swap
+    P._DERIVED = {"img2img": object()}          # must be empty after the swap
     P._load_transformer = lambda: monkey_new
 
 
@@ -78,7 +78,7 @@ def test_swap_reapplies_loras_on_the_new_transformer():
     pipe = FakePipe(FakeT("old"))
     _swap_env(new_t, loras=[(lp, 0.6)])
     assert P._swap_transformer(pipe) is True
-    # les adaptateurs etaient sur l'ancien transformer -> reposes sur le nouveau
+    # the adapters were on the old transformer -> set again on the new one
     assert ("load_lora", "a.safetensors") in pipe.calls
     assert P._APPLIED_LORAS == [(lp, 0.6)]
 
@@ -99,11 +99,11 @@ def test_swap_failure_falls_back():
     P.OFFLOAD_MODE = "none"
     P.LORAS = []
     P._load_transformer = lambda: (_ for _ in ()).throw(RuntimeError("corrupt file"))
-    assert P._swap_transformer(pipe) is False    # -> le caller fera free_vram + reload
+    assert P._swap_transformer(pipe) is False    # -> the caller will do free_vram + a reload
 
 
 def test_set_zimage_transformer_does_not_free_the_pipe():
-    """Coeur du fix: changer de checkpoint single-file ne doit plus jeter le pipeline."""
+    """The heart of the fix: changing single-file checkpoint must no longer throw the pipeline away."""
     sentinel = object()
     P._BASE_PIPE = sentinel
     P.ZIMAGE_TRANSFORMER = "D:/models/A.safetensors"
@@ -114,7 +114,7 @@ def test_set_zimage_transformer_does_not_free_the_pipe():
 
 
 def test_set_zimage_model_single_file_does_not_free():
-    # _is_single_file exige un fichier REEL (comme resolve_checkpoint en fournit)
+    # _is_single_file requires a REAL file (as resolve_checkpoint supplies)
     d = tempfile.mkdtemp()
     ck = os.path.join(d, "Juggernaut.safetensors")
     with open(ck, "wb") as f:
@@ -129,7 +129,7 @@ def test_set_zimage_model_single_file_does_not_free():
 
 
 def test_set_zimage_model_new_base_repo_still_reloads():
-    """Le repo de base change -> VAE/encodeur changent aussi -> reload complet obligatoire."""
+    """The base repo changes -> the VAE/encoder change too -> a full reload is mandatory."""
     P._BASE_PIPE = object()
     P._LOADED_KEY = ("old/repo", None, "none")
     P.BASE_REPO = "old/repo"
