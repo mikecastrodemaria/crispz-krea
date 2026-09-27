@@ -1,7 +1,9 @@
-"""crispz-krea - CLI (mode batch / scripting) + serveur HTTP persistant (FastAPI).
+"""crispz-krea - the CLI (batch / scripting mode) + a persistent HTTP server (FastAPI).
 
-Extrait de app.py (step 8). Importe l'UI et l'orchestration depuis cz_ui (qui branche
-tous les cz_*); ne redefinit rien du pipeline. app.py se contente d'appeler cli_main.
+Pulled out of app.py (step 8). It imports the UI and the orchestration from cz_ui (which
+wires all the cz_* together); it redefines nothing of the pipeline. app.py merely calls
+cli_main.
+
 """
 
 import os
@@ -16,12 +18,12 @@ import cz_pipeline
 import cz_esrgan
 from cz_prompt import resolve_seed, expand_prompt_pair
 from cz_ui import (  # noqa: F401
-    # constantes / chemins / defauts
+    # constants / paths / defaults
     DEVICE, HERE, PREFS_PATH, PRESETS, SUPPORTED_FORMATS,
     DEFAULT_MODEL, DEFAULT_FACTOR, DEFAULT_DENOISE, DEFAULT_STEPS, DEFAULT_TILE,
     DEFAULT_OVERLAP, DEFAULT_REFINE_TILE, DEFAULT_REFINE_OVERLAP, DEFAULT_SAVE_MODE,
     DEFAULT_OUTPUT_DIR, DEFAULT_OUTPUT_FORMAT,
-    # orchestration / pipeline (re-exportes par cz_ui)
+    # orchestration / pipeline (re-exported by cz_ui)
     run, process_one, txt2img_run, outpaint, build_ui,
     free_vram, set_offload_mode, set_guidance, set_sampler, SAMPLER_CHOICES,
     set_schedule, SCHEDULE_INPUTS, set_esrgan_dir, set_zimage_model,
@@ -34,8 +36,8 @@ from cz_ui import (  # noqa: F401
 
 
 def _disable_brotli():
-    """Neutralise le brotli_middleware de Gradio (bug h11 'Content-Length' a l'envoi
-    de gros resultats). Patch sur le symbole importe par gradio.routes."""
+    """Neutralises Gradio's brotli_middleware (an h11 'Content-Length' bug when sending
+    big results). Patched on the symbol gradio.routes imports."""
     class _Passthrough:
         def __init__(self, app, *a, **k):
             self.app = app
@@ -53,12 +55,12 @@ def _disable_brotli():
 
 
 # ----------------------------------------------------------------------------
-# Palier 3 : serveur HTTP persistant (FastAPI), load paresseux + unload sur idle
+# Stage 3: a persistent HTTP server (FastAPI), a lazy load + an unload on idle
 # ----------------------------------------------------------------------------
 def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
-    """Petit serveur HTTP. Le modele Z-Image se charge au premier /upscale et reste
-    chaud (plus de rechargement entre appels -> temps stables). Apres idle_timeout
-    secondes sans requete, la VRAM est rendue (utile pour cohabiter avec Fooocus).
+    """A small HTTP server. The Z-Image model loads on the first /upscale and stays
+    warm (no more reloading between calls -> stable timings). After idle_timeout seconds
+    with no request, the VRAM is given back (useful to cohabit with Fooocus).
     Endpoints: GET /health, GET /models, POST /upscale, POST /unload."""
     try:
         import threading
@@ -115,7 +117,7 @@ def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
         avail = list_esrgan_models()
         if not avail:
             raise HTTPException(status_code=400, detail=f"no ESRGAN model in {cz_esrgan.ESRGAN_DIR}")
-        # preset (s'il est fourni) sert de base; sinon les champs de la requete.
+        # the preset (when one is given) serves as the base; otherwise the request's fields.
         p = PRESETS.get(req.preset or "Custom") or {}
         def pick(name, val):
             return p.get(name, val)
@@ -124,7 +126,7 @@ def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
             state["last"] = time.time()
             set_offload_mode(pick("cpu_offload", req.cpu_offload))
             img = Image.open(req.input)
-            # Seed concrete + variantes {a|b|c} / wildcards liees a cette seed.
+            # A concrete seed + the {a|b|c} variants / wildcards tied to that seed.
             seed = resolve_seed(req.seed)
             prompt = expand_prompt_pair(req.prompt, "", seed)[0]
             result, t = process_one(
@@ -167,8 +169,8 @@ def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
 # CLI (mode batch / scripting)
 # ----------------------------------------------------------------------------
 def _xyz_cli_apply(name, value, p, base_ms):
-    """Applique la valeur d'un axe cote CLI: kind=val -> cle abstraite du dict p
-    (spec['param']); modeles/sampler via les setters; Performance/S/R comme dans l'UI."""
+    """Applies an axis' value on the CLI side: kind=val -> the abstract key of the dict p
+    (spec['param']); models/sampler through the setters; Performance/S/R as in the UI."""
     from cz_ui import _XYZ_AXES, PERFORMANCE, resolve_checkpoint, ZIMAGE_BASE_REPOS
     spec = _XYZ_AXES[name]
     kind = spec.get("kind")
@@ -190,7 +192,7 @@ def _xyz_cli_apply(name, value, p, base_ms):
         from cz_ui import _path_for_lora, _xyz_current_lora_weight
         lora_name, weight = value
         cur = list(base_ms.get("loras") or [])
-        if weight is None:                       # axe "LoRA" : garde le poids courant
+        if weight is None:                       # the "LoRA" axis: keeps the current weight
             weight = float(cur[0][1]) if cur else _xyz_current_lora_weight()
         set_loras([] if lora_name == "None"
                   else [(_path_for_lora(lora_name), float(weight))] + cur[1:])
@@ -206,9 +208,9 @@ def _xyz_cli_apply(name, value, p, base_ms):
 
 
 def _xyz_cli_run(args, parser, model_name):
-    """Grille X/Y/Z en CLI (--txt2img --xyz 'Axe=v1,v2' x1-3): un rendu par combo,
-    sauvegarde habituelle, puis planche(s) annotee(s) via cz_ui._xyz_assemble.
-    Ctrl+C = planche partielle avec les cellules deja rendues."""
+    """An X/Y/Z grid on the CLI (--txt2img --xyz 'Axis=v1,v2' x1-3): one render per combo,
+    the usual saving, then the annotated contact sheet(s) through cz_ui._xyz_assemble.
+    Ctrl+C = a partial sheet with the cells already rendered."""
     from cz_ui import (_XYZ_AXES, _xyz_parse_values, _xyz_validate_axis, _xyz_match,
                        _xyz_assemble, XYZ_FEATURE_ENABLED, XYZ_MAX_JOBS, XYZ_THUMB,
                        _gen_meta, _xyz_fmt_value)
@@ -263,10 +265,10 @@ def _xyz_cli_run(args, parser, model_name):
                     combo = [(xn, x)] + ([(yn, y)] if yn else []) + ([(zn, z)] if zn else [])
                     for aname, aval in combo:
                         _xyz_cli_apply(aname, aval, p, base_ms)
-                    # Par cellule, APRES les axes (Prompt / S/R agissent sur le texte
-                    # brut): seed -1 resolue (chaque cellule garde son tirage, comme
-                    # la grille de l'UI), variantes {a|b|c} + wildcards liees a cette
-                    # seed (index = numero de cellule pour le mode 'dans l'ordre').
+                    # Per cell, AFTER the axes (Prompt / S/R act on the raw text):
+                    # seed -1 resolved (each cell keeps its own draw, as in the UI's
+                    # grid), {a|b|c} variants + wildcards tied to that seed (the index =
+                    # the cell number for the 'in order' mode).
                     p["seed"] = resolve_seed(p["seed"])
                     p["prompt"], cell_neg = expand_prompt_pair(
                         p["prompt"], args.negative, p["seed"], index=done)
@@ -318,10 +320,10 @@ def cli_main(argv=None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--cli", action="store_true", help="Force CLI mode (otherwise: launches the UI)")
-    # Sources : fichier, glob, dossier
+    # Sources: a file, a glob, a folder
     parser.add_argument("-i", "--input", help="Image, glob (in/*.png) or source FOLDER for batch")
     parser.add_argument("--input-folder", help="Explicit alias for the batch folder (otherwise -i works too)")
-    # Sortie
+    # Output
     parser.add_argument("-o", "--output",
                         help="Output file (single mode, overrides auto naming). "
                              "If a folder: equivalent to --save-mode local --output-dir <that folder>.")
@@ -393,7 +395,7 @@ def cli_main(argv=None):
                              "up to 3 times for X, Y, Z axes. Same axes/rules as the UI grid "
                              "(quotes protect commas; Prompt S/R: first value = search term). Ends "
                              "with annotated contact sheet(s) in <output>/xyz_<timestamp>/.")
-    # Nouvelles features en CLI (mêmes que l'UI)
+    # The new features on the CLI (the same as the UI's)
     parser.add_argument("--lora", action="append", default=[], metavar="NAME[:WEIGHT]",
                         help="Apply a LoRA (file in the loras dir, or a path), optional :weight "
                              "(default 1.0). Repeatable, e.g. --lora a.safetensors:0.8 --lora b")
@@ -460,7 +462,7 @@ def cli_main(argv=None):
                         help="Protect the Gradio UI with a login page. Several accounts: "
                              "\"a:pw1,b:pw2\". Also via config.txt 'auth' or env CRISPZ_AUTH. "
                              "Strongly recommended when exposing over LAN or a tunnel.")
-    # Chemins config / Z-Image
+    # The config / Z-Image paths
     parser.add_argument("--esrgan-dir", help="Override ESRGAN_DIR for this run")
     parser.add_argument("--zimage-model",
                         help="Override Z-Image: HF repo, diffusers folder, OR a single-file "
@@ -499,7 +501,7 @@ def cli_main(argv=None):
                              "Implies a silent stdout; the VRAM peak stays on stderr.")
     args = parser.parse_args(argv)
     apply_preset_to_args(args, argv if argv is not None else sys.argv[1:])
-    # Raccourci: --no-refine == --denoise 0 (saute la passe img2img lente).
+    # A shortcut: --no-refine == --denoise 0 (skips the slow img2img pass).
     if args.no_refine:
         args.denoise = 0.0
 
@@ -525,14 +527,14 @@ def cli_main(argv=None):
         set_sampler(args.sampler)
     if args.schedule:
         set_schedule(args.schedule)
-    # Ratio force sur l'entree Upscale/img2img (comme le radio UI). Le mode peut aussi
-    # venir de la config; le flag explicite gagne.
+    # The ratio forced on the Upscale/img2img input (like the UI radio). The mode can
+    # also come from the config; the explicit flag wins.
     if args.force_ratio:
         cz_pipeline.set_force_ratio(args.force_ratio)
     if args.force_ratio_mode:
         cz_pipeline.set_force_ratio_mode(args.force_ratio_mode)
 
-    # LoRA(s) en CLI: --lora NAME[:WEIGHT] (repetable)
+    # LoRA(s) on the CLI: --lora NAME[:WEIGHT] (repeatable)
     if args.loras_dir:
         set_loras_dir(args.loras_dir)
     if args.lora:
@@ -542,7 +544,7 @@ def cli_main(argv=None):
             try:
                 slots.append((head, float(tail)))   # NAME:WEIGHT
             except ValueError:
-                slots.append((spec, cz_pipeline.LORA_WEIGHT))    # NAME (poids par defaut)
+                slots.append((spec, cz_pipeline.LORA_WEIGHT))    # NAME (the default weight)
         set_loras(slots)
 
     def _maybe_faceswap(img):
@@ -553,8 +555,8 @@ def cli_main(argv=None):
                 _log(f"faceswap skipped: {e}")
         return img
 
-    # --provenance : lit la provenance IA de -i (C2PA + watermark) puis termine.
-    # Aucun modele de diffusion charge, tout est CPU.
+    # --provenance : reads the AI provenance of -i (C2PA + watermark) then stops.
+    # No diffusion model is loaded, everything is CPU.
     if args.provenance:
         if not args.input or not os.path.isfile(args.input):
             parser.error("--provenance requires -i <image>")
@@ -563,11 +565,11 @@ def cli_main(argv=None):
                .replace("**", "").replace("  \n", "\n  ")
                .replace("✅", "[OK]").replace("⚠️", "[!]")
                .replace("ℹ️", "[i]").replace("—", "-"))
-        # console Windows souvent cp1252: on reste ASCII-safe
+        # the Windows console is often cp1252: we stay ASCII-safe
         print(txt.encode("ascii", "replace").decode("ascii"))
         return 0
 
-    # --remove-bg : detoure -i puis termine
+    # --remove-bg : cuts -i out then stops
     if args.remove_bg:
         if not args.input or not os.path.isfile(args.input):
             parser.error("--remove-bg requires -i <image>")
@@ -580,12 +582,12 @@ def cli_main(argv=None):
         print(os.path.abspath(dst))
         return 0
 
-    # Seed -1 resolue en valeur concrete (reproductible, nom de fichier, detailleurs)
-    # puis variantes {a|b|c} + wildcards du prompt et du negatif, liees a cette seed.
-    # --xyz fait tout cela PAR CELLULE (_xyz_cli_run): ses axes Prompt / S/R agissent
-    # sur le texte brut et chaque cellule garde sa propre seed.
-    # --improve / --improve-negative: reecriture Ollama AVANT tout le reste (variantes,
-    # wildcards, LoRA, XYZ travaillent ensuite sur le texte ameliore, syntaxe conservee).
+    # seed -1 resolved to a concrete value (reproducible, the file name, the detailers)
+    # then the {a|b|c} variants + wildcards of the prompt and the negative, tied to that
+    # seed. --xyz does all of that PER CELL (_xyz_cli_run): its Prompt / S/R axes act on
+    # the raw text and each cell keeps its own seed.
+    # --improve / --improve-negative: an Ollama rewrite BEFORE all the rest (the variants,
+    # wildcards, LoRAs and XYZ then work on the improved text, syntax preserved).
     if args.improve or args.improve_negative:
         from cz_ollama import improve_prompt, improve_negative, OllamaError
         try:
@@ -613,7 +615,7 @@ def cli_main(argv=None):
         args.prompt, args.negative = expand_prompt_pair(args.prompt, args.negative,
                                                         args.seed, index=0)
 
-    # --reframe W:H : reframe -i (contain = outpaint / cover = crop) puis termine
+    # --reframe W:H : reframes -i (contain = outpaint / cover = crop) then stops
     if args.reframe:
         if not args.input or not os.path.isfile(args.input):
             parser.error("--reframe requires -i <image>")
@@ -633,7 +635,7 @@ def cli_main(argv=None):
         print(os.path.abspath(dst))
         return 0
 
-    # --expand left,right,... : outpaint directionnel de -i (Expand sides) puis termine
+    # --expand left,right,... : a directional outpaint of -i (Expand sides) then stops
     if args.expand:
         if not args.input or not os.path.isfile(args.input):
             parser.error("--expand requires -i <image>")
@@ -654,7 +656,7 @@ def cli_main(argv=None):
         print(os.path.abspath(dst))
         return 0
 
-    # --inpaint-mask fichier.png : inpaint de la zone blanche du masque puis termine
+    # --inpaint-mask file.png : inpaints the white area of the mask then stops
     if args.inpaint_mask:
         if not args.input or not os.path.isfile(args.input):
             parser.error("--inpaint-mask requires -i <image>")
@@ -673,7 +675,7 @@ def cli_main(argv=None):
         print(os.path.abspath(dst))
         return 0
 
-    # --vision-mix IMG... : decrit + fusionne en un prompt, puis txt2img
+    # --vision-mix IMG... : describes + merges into one prompt, then txt2img
     if args.vision_mix:
         imgs = [Image.open(p) for p in args.vision_mix if os.path.isfile(p)]
         if not imgs:
@@ -690,9 +692,9 @@ def cli_main(argv=None):
     if args.serve:
         return serve_main(args.host, args.port, args.idle_timeout)
 
-    # Mode txt2img (Text -> Image, + upscale optionnel)
+    # txt2img mode (Text -> Image, + an optional upscale)
     if args.txt2img:
-        # Un axe XYZ "Prompt=..." fournit les prompts lui-meme -> --prompt optionnel.
+        # An XYZ axis "Prompt=..." supplies the prompts itself -> --prompt is optional.
         _xyz_has_prompt = any(s.partition("=")[0].strip().lower() == "prompt"
                               for s in (args.xyz or []))
         if not args.prompt and not _xyz_has_prompt:
@@ -723,7 +725,7 @@ def cli_main(argv=None):
             result, _nf = cz_detailer.detail_faces(result, args.prompt, args.seed,
                                                    steps=args.steps)
             _log(f"detailer: {_nf} face(s) refined")
-        # Sortie : -o fichier, sinon output_dir (sauf save-mode display)
+        # Output: -o file, otherwise output_dir (except in save-mode display)
         dst = None
         if args.output and not (os.path.isdir(args.output) or args.output.endswith(("/", "\\"))):
             dst = args.output
@@ -768,19 +770,19 @@ def cli_main(argv=None):
                 print(m)
         return 0
 
-    # Pas de --cli et pas d'entree -> UI
+    # No --cli and no input -> the UI
     if not args.cli and not args.input and not args.input_folder:
-        _disable_brotli()  # evite le bug h11 'Content-Length' a l'envoi des resultats
-        # + dossiers modeles (LoRA/checkpoints) pour servir leurs previews dans l'Asset Browser
+        _disable_brotli()  # avoids the h11 'Content-Length' bug when sending the results
+        # + the model folders (LoRAs/checkpoints) to serve their previews in the Asset Browser
         _model_dirs = [p for p in (getattr(cz_pipeline, "LORAS_DIR", ""),
                                    getattr(cz_pipeline, "CHECKPOINTS_DIR", ""),
                                    getattr(cz_pipeline, "CHECKPOINTS_EXTRA_DIR", ""))
                        if p and os.path.isdir(p)]
-        # Cache de miniatures deporte (asset_browser.cache_dir, ex. un SSD): il faut le
-        # servir aussi, les vignettes y sont referencees en URL absolue.
+        # A thumbnail cache kept elsewhere (asset_browser.cache_dir, an SSD say): it has
+        # to be served too, the thumbnails are referenced there by absolute URL.
         import cz_assetbrowser as _ab
         _thumbs_dir = _ab._thumbs_root(_ab._ab_resolve_dir(DEFAULT_OUTPUT_DIR))[0]
-        # Auth optionnelle (page de login Gradio). Off par defaut (localhost). Source:
+        # Optional auth (the Gradio login page). Off by default (localhost). The source:
         # --auth > env CRISPZ_AUTH > config 'auth'. Format "user:password" (multi via ",").
         _auth_raw = (args.auth or os.environ.get("CRISPZ_AUTH")
                      or str(cz_core.CONFIG.get("auth") or "")).strip()
@@ -812,13 +814,13 @@ def cli_main(argv=None):
     if args.report_vram:
         _reset_vram_peak()
 
-    # Resoudre les entrees : dossier > glob > fichier unique
+    # Resolving the inputs: a folder > a glob > a single file
     source_folder = args.input_folder
     if not source_folder and args.input and os.path.isdir(args.input):
         source_folder = args.input
         args.input = None
 
-    # --output (compat) : si c'est un dossier, equivalent a --save-mode local --output-dir <dossier>
+    # --output (compat): when it is a folder, the equivalent of --save-mode local --output-dir <folder>
     save_mode = args.save_mode
     output_dir = args.output_dir
     explicit_output_file = None
@@ -830,11 +832,11 @@ def cli_main(argv=None):
             explicit_output_file = args.output
             save_mode = "custom"
 
-    # --print-output: stdout reserve aux chemins de sortie (contrat machine).
-    # Le pic VRAM, lui, reste sur stderr et n'est donc pas pollue.
+    # --print-output: stdout is reserved for the output paths (a machine contract).
+    # The VRAM peak, for its part, stays on stderr and therefore does not pollute it.
     quiet = args.quiet or args.print_output
 
-    # Mode batch dossier
+    # Folder batch mode
     if source_folder:
         last_result, last_source, report = run(
             None, source_folder, model_name, args.factor, args.denoise, args.steps,
@@ -851,21 +853,21 @@ def cli_main(argv=None):
             _report_vram()
         return 0
 
-    # Mode unique : glob possible
+    # single mode: a glob is possible
     paths = sorted(glob.glob(args.input)) if any(c in args.input for c in "*?[") else [args.input]
     paths = [p for p in paths if os.path.isfile(p)]
     if not paths:
         parser.error(f"No file matches {args.input}")
 
-    # Si plusieurs fichiers via glob, on les passe un par un
+    # Several files through a glob: we pass them one by one
     for p in paths:
         if not quiet:
             print(f"-> {p}")
         img = Image.open(p)
-        # explicit_output_file ne s'applique qu'au premier fichier
+        # explicit_output_file only applies to the first file
         if explicit_output_file and len(paths) == 1:
-            # apply_force_ratio=True: meme semantique que run() (le chemin standard) --
-            # sans FORCE_RATIO defini c'est un no-op.
+            # apply_force_ratio=True: the same semantics as run() (the standard path) --
+            # with no FORCE_RATIO set it is a no-op.
             result, t = process_one(img, model_name, args.factor, args.denoise, args.steps,
                                     args.prompt, args.seed, args.tile, args.overlap,
                                     refine_tile=args.refine_tile, refine_overlap=args.refine_overlap,
@@ -879,7 +881,7 @@ def cli_main(argv=None):
             if not quiet:
                 print(_format_timings(t, src_path=p, dst_path=explicit_output_file))
         else:
-            # mode standard: build_output_path applique le save_mode
+            # the standard mode: build_output_path applies the save_mode
             last_result, last_source, report = run(
                 p, None, model_name, args.factor, args.denoise, args.steps,
                 args.prompt, args.seed, args.tile, args.overlap,
