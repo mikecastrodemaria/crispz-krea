@@ -15,7 +15,7 @@ git+https://github.com/huggingface/diffusers@de6b049539a07bda562c9b8c275e759aa52
 # absent before 4.51 (it fails with "module transformers has no attribute Qwen3Model").
 # The <5 bound: the 5.x line has API changes that can break the diffusers
 # source. Stay on 4.51+ (tested OK on 4.57).
-transformers>=4.51,<5
+transformers>=5.10.1,<6
 accelerate
 sentencepiece
 spandrel
