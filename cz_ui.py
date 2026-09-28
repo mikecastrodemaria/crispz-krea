@@ -645,7 +645,7 @@ def _ui_civitai_reco(name, progress=gr.Progress()):
                 progress(frac if frac is not None else 0.5, desc=text or phase)
             except Exception:
                 pass
-        res = cz_civitai.fetch_civitai_for_model(path, progress=_prog)  # ecrit 'recommended'
+        res = cz_civitai.fetch_civitai_for_model(path, progress=_prog)  # writes 'recommended'
         civ = cz_civitai.load_civitai_sidecar(path)
         reco = civ.get("recommended") or {}
         if not reco:
@@ -2862,7 +2862,7 @@ def _ui_head():
 def _parse_a1111_params(text):
     """Parse le format A1111/Civitai (chunk PNG 'parameters'):
         <prompt>\\nNegative prompt: <neg>\\nSteps: N, Sampler: ..., Seed: N, Size: WxH, Model: ...
-    Renvoie un dict {prompt, negative, seed, steps, guidance, sampler, size, model}."""
+    Returns a dict {prompt, negative, seed, steps, guidance, sampler, size, model}."""
     def _int(v):
         try:
             return int(str(v).strip())

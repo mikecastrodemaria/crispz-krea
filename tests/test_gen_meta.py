@@ -71,7 +71,7 @@ def test_the_base_repo_alone_needs_no_second_line():
         m = P._gen_meta("txt2img", "p")
     finally:
         _restore(old)
-    assert "base_repo" not in m, "redondant quand le modele EST le repo"
+    assert "base_repo" not in m, "redundant when the model IS the repo"
     print("OK test_the_base_repo_alone_needs_no_second_line")
 
 

@@ -79,7 +79,7 @@ def test_sha256_is_cached_and_reused():
     finally:
         cz_civitai._compute_sha256 = real
     assert h1 == h2 == hashlib.sha256(b"y" * 4096).hexdigest()
-    assert len(calls) == 1, "le 2e appel doit venir du cache, pas d'un re-hash"
+    assert len(calls) == 1, "the 2nd call must come from the cache, not from a re-hash"
     sc = cz_civitai.load_civitai_sidecar(p)
     assert sc["sha256"] == h1 and sc["sha256_size"] == 4096
 
@@ -89,7 +89,7 @@ def test_sha256_cache_invalidated_when_size_changes():
     cz_civitai.model_sha256(p)
     with open(p, "wb") as f:                     # the model replaced -> a different size
         f.write(b"z" * 200)
-    assert cz_civitai._cached_sha256(p) is None, "cache perime doit etre rejete"
+    assert cz_civitai._cached_sha256(p) is None, "a stale cache must be rejected"
     assert cz_civitai.model_sha256(p) == hashlib.sha256(b"z" * 200).hexdigest()
 
 
@@ -119,7 +119,7 @@ def test_fetch_sidecar_merge_keeps_hash_cache(monkeypatch=None):
         cz_civitai._api_get, cz_civitai._update_fields = old_get, old_upd
     assert res["success"] is True
     sc = cz_civitai.load_civitai_sidecar(p)
-    assert sc["sha256"] == sha, "le fetch a ecrase le cache de hash"
+    assert sc["sha256"] == sha, "the fetch overwrote the hash cache"
     assert sc["modelId"] == 9 and sc["examples"][0]["prompt"] == "hi"
 
 
@@ -191,7 +191,7 @@ def test_latest_version_ignores_other_base_models():
 def test_update_flag_not_raised_by_a_new_base_model():
     upd = _with_model_payload(
         _MIXED_BASES, lambda: cz_civitai._update_fields(9, 200, base_model="Z-Image"))
-    assert upd["update_available"] is False, "Krea2 n'est pas un update pour du Z-Image"
+    assert upd["update_available"] is False, "Krea2 is not an update for a Z-Image"
     # A real update: we are on the 1.0 Z-Image -> the 2.0 Z-Image (not the 3.0 Krea2).
     upd = _with_model_payload(
         _MIXED_BASES, lambda: cz_civitai._update_fields(9, 100, base_model="z image"))

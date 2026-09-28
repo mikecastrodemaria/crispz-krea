@@ -236,7 +236,7 @@ _SCHEDULE_FLAG = {"beta": "use_beta_sigmas", "karras": "use_karras_sigmas",
 # sampler is built from (keeps shift/flow params whatever the current sampler is).
 _BASE_SCHED_CONFIG = None
 
-# Hook de progression UI (gradio gr.Progress). None hors UI (CLI/serveur). Pose par
+# UI progress hook (gradio gr.Progress). None outside the UI (CLI/server). Set by
 # the handlers through cz_pipeline._PROGRESS = ...
 _PROGRESS = None
 # Fooocus-style Stop: a global flag plus the interruption of the diffusers pipelines. Set
@@ -2948,8 +2948,8 @@ def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
     # Anti-duplication 2 (a safety net): at a high denoise each tile can still drift.
     denoise = float(denoise)
     if _TILE_DENOISE_CAP > 0 and denoise > _TILE_DENOISE_CAP:
-        _log(f"refine tiled: denoise {denoise:.2f} > plafond {_TILE_DENOISE_CAP:.2f} -> "
-             f"reduit a {_TILE_DENOISE_CAP:.2f} (regle refine_tile_denoise_cap).")
+        _log(f"refine tiled: denoise {denoise:.2f} > the cap {_TILE_DENOISE_CAP:.2f} -> "
+             f"lowered to {_TILE_DENOISE_CAP:.2f} (refine_tile_denoise_cap rule).")
         denoise = _TILE_DENOISE_CAP
 
     acc = np.zeros((h, w, 3), dtype=np.float32)

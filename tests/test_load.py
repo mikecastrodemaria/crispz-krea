@@ -49,7 +49,7 @@ def test_load_monitor_returns_and_raises():
         cz_pipeline._load_monitor("boom", lambda: (_ for _ in ()).throw(ValueError("x")))
     except ValueError:
         raised = True
-    assert raised, "_load_monitor doit relever l'exception de fn"
+    assert raised, "_load_monitor must re-raise fn's exception"
 
 
 if __name__ == "__main__":

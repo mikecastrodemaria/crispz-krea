@@ -64,9 +64,9 @@ def test_swap_keeps_pipe_and_replaces_only_transformer():
     pipe = FakePipe(old_t)
     _swap_env(new_t)
     assert P._swap_transformer(pipe) is True
-    assert pipe.transformer is new_t, "le transformer doit etre remplace"
+    assert pipe.transformer is new_t, "the transformer must be replaced"
     assert ("register", ("transformer",)) in pipe.calls
-    assert P._DERIVED == {}, "les pipes derives pointaient sur l'ancien transformer"
+    assert P._DERIVED == {}, "the derived pipes still pointed at the old transformer"
 
 
 def test_swap_reapplies_loras_on_the_new_transformer():
@@ -109,7 +109,7 @@ def test_set_zimage_transformer_does_not_free_the_pipe():
     P.ZIMAGE_TRANSFORMER = "D:/models/A.safetensors"
     P.set_zimage_transformer("D:/models/B.safetensors")
     assert P.ZIMAGE_TRANSFORMER == "D:/models/B.safetensors"
-    assert P._BASE_PIPE is sentinel, "le pipe doit rester charge (swap du transformer seul)"
+    assert P._BASE_PIPE is sentinel, "the pipe must stay loaded (the transformer alone is swapped)"
     P._BASE_PIPE = None
 
 
@@ -124,7 +124,7 @@ def test_set_zimage_model_single_file_does_not_free():
     P.ZIMAGE_TRANSFORMER = None
     P.set_zimage_model(ck)
     assert P.ZIMAGE_TRANSFORMER == ck
-    assert P._BASE_PIPE is sentinel, "un checkpoint single-file ne doit pas jeter le pipe"
+    assert P._BASE_PIPE is sentinel, "a single-file checkpoint must not throw the pipe away"
     P._BASE_PIPE = None
 
 
@@ -135,7 +135,7 @@ def test_set_zimage_model_new_base_repo_still_reloads():
     P.BASE_REPO = "old/repo"
     P.set_zimage_model("Tongyi-MAI/Z-Image-Turbo")
     assert P.BASE_REPO == "Tongyi-MAI/Z-Image-Turbo"
-    assert P._BASE_PIPE is None, "changer de repo de base doit liberer le pipe"
+    assert P._BASE_PIPE is None, "changing the base repo must release the pipe"
     assert P._LOADED_KEY is None
 
 

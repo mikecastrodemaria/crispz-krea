@@ -63,7 +63,7 @@ def test_mode_setter_normalises():
     try:
         czp.set_force_ratio_mode("EXTEND")
         assert czp.FORCE_RATIO_MODE == "extend"
-        czp.set_force_ratio_mode("nimporte quoi")
+        czp.set_force_ratio_mode("anything at all")
         assert czp.FORCE_RATIO_MODE == "crop"
         czp.set_force_ratio_mode(None)
         assert czp.FORCE_RATIO_MODE == "crop"

@@ -57,7 +57,7 @@ def test_same_prompt_encodes_once():
         P._flux_call(pipe, prompt="a lighthouse")
     assert pipe.encodes == 1, f"encode appele {pipe.encodes} fois"
     for kw in pipe.calls:
-        assert kw["prompt"] is None, "le prompt doit laisser la place aux embeddings"
+        assert kw["prompt"] is None, "the prompt must give way to the embeddings"
         assert kw["prompt_embeds"] is not None
     print("OK test_same_prompt_encodes_once")
 
@@ -78,7 +78,7 @@ def test_freeing_vram_clears_the_cache():
     pipe = FakePipe()
     P._flux_call(pipe, prompt="a lighthouse")
     P.free_vram()
-    assert not P._EMBED_CACHE, "le cache doit tomber avec le pipeline"
+    assert not P._EMBED_CACHE, "the cache must go with the pipeline"
     P._flux_call(pipe, prompt="a lighthouse")
     assert pipe.encodes == 2, pipe.encodes
     print("OK test_freeing_vram_clears_the_cache")
@@ -89,8 +89,8 @@ def test_an_encoder_failure_never_breaks_the_render():
     _fresh()
     pipe = FakePipe(boom=True)
     out = P._flux_call(pipe, prompt="a lighthouse")
-    assert out.images == ["IMG"], "le rendu doit aboutir quand meme"
-    assert pipe.calls[0]["prompt"] == "a lighthouse", "repli sur le prompt en clair"
+    assert out.images == ["IMG"], "the render must succeed anyway"
+    assert pipe.calls[0]["prompt"] == "a lighthouse", "falls back on the plain prompt"
     assert "prompt_embeds" not in pipe.calls[0]
     print("OK test_an_encoder_failure_never_breaks_the_render")
 
@@ -100,7 +100,7 @@ def test_disabled_by_config():
     pipe = FakePipe()
     P._flux_call(pipe, prompt="a lighthouse")
     P._flux_call(pipe, prompt="a lighthouse")
-    assert pipe.encodes == 0, "desactive: aucun encodage anticipe"
+    assert pipe.encodes == 0, "disabled: no early encoding"
     assert pipe.calls[0]["prompt"] == "a lighthouse"
     _fresh()
     print("OK test_disabled_by_config")
@@ -136,7 +136,7 @@ def test_every_returned_tensor_is_carried():
     pipe = FakePipe()
     P._flux_call(pipe, prompt="a lighthouse")
     for name in P._EMBED_OUTS:
-        assert name in pipe.calls[0], f"{name} manquant dans l'appel"
+        assert name in pipe.calls[0], f"{name} missing from the call"
     print("OK test_every_returned_tensor_is_carried")
 
 if __name__ == "__main__":

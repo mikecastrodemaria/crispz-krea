@@ -199,9 +199,9 @@ def test_changing_an_encoder_frees_the_pipe_and_the_cache():
         P._TEXT_ENCODER_ACTIVE = {T5: r"D:\enc\old-t5", CLIP: ""}
         P.set_text_encoder(T5, r"D:\enc\t5xxl-abl")
         assert P.TEXT_ENCODER == {T5: r"D:\enc\t5xxl-abl", CLIP: ""}, P.TEXT_ENCODER
-        assert P._BASE_PIPE is None, "le pipeline doit etre libere"
-        assert not P._EMBED_CACHE, "les anciens encodages resteraient servis"
-        assert not any(P._TEXT_ENCODER_ACTIVE.values()), "free_vram garde l'ancien encodeur"
+        assert P._BASE_PIPE is None, "the pipeline must be released"
+        assert not P._EMBED_CACHE, "the old encodings would still be served"
+        assert not any(P._TEXT_ENCODER_ACTIVE.values()), "free_vram kept the old encoder"
         # the same value: nothing moves, no pointless reload
         sentinel = P._BASE_PIPE = object()
         P.set_text_encoder(T5, r"D:\enc\t5xxl-abl")
@@ -211,7 +211,7 @@ def test_changing_an_encoder_frees_the_pipe_and_the_cache():
         assert P._BASE_PIPE is None and P.TEXT_ENCODER[T5] == r"D:\enc\t5xxl-abl"
         try:
             P.set_text_encoder("text_encoder_3", "x")
-            raise AssertionError("un composant inconnu doit etre refuse")
+            raise AssertionError("an unknown component must be refused")
         except ValueError:
             pass
     finally:
@@ -247,10 +247,10 @@ def test_the_embed_key_carries_both_encoders():
         assert pipe.n == 1, pipe.n
         P._TEXT_ENCODER_ACTIVE = {T5: r"D:\enc\t5xxl-abl", CLIP: ""}
         P._cached_prompt_embeds(pipe, "p", {})
-        assert pipe.n == 2, "un encodage de l'ancien T5 a ete resservi"
+        assert pipe.n == 2, "an encoding from the old T5 was served again"
         P._TEXT_ENCODER_ACTIVE = {T5: r"D:\enc\t5xxl-abl", CLIP: r"D:\enc\clip-gmp"}
         P._cached_prompt_embeds(pipe, "p", {})
-        assert pipe.n == 3, "un encodage de l'ancien CLIP a ete resservi"
+        assert pipe.n == 3, "an encoding from the old CLIP was served again"
         # the pipe's T5 replaced by another object: the old key only saw the CLIP
         keep = pipe.text_encoder_2
         pipe.text_encoder_2 = object()
@@ -272,7 +272,7 @@ def test_metadata_names_the_encoders_that_ran_and_never_their_paths():
         m = P._gen_meta("txt2img", "p")
         assert m["text_encoder_t5"] == "t5xxl-abliterated", m
         assert m["text_encoder_clip"] == "flux-copy", m
-        assert "someone" not in json.dumps(m), "chemin local dans les metadonnees"
+        assert "someone" not in json.dumps(m), "a local path in the metadata"
         # the T5 discarded at load time, the CLIP applied: each one its field
         P._TEXT_ENCODER_ACTIVE = {T5: "", CLIP: clip}
         m = P._gen_meta("txt2img", "p")
@@ -363,8 +363,8 @@ def test_ensure_base_passes_the_encoders_and_never_loses_the_render():
         with _Base():
             P._ensure_base()
         _repo, kw = _FakeFlux.calls[-1]
-        assert kw.get(T5) is loaded, "le T5 de remplacement doit etre passe a from_pretrained"
-        assert CLIP not in kw, "un CLIP qui n'a pas pu se charger ne doit pas etre passe"
+        assert kw.get(T5) is loaded, "the replacement T5 must be passed to from_pretrained"
+        assert CLIP not in kw, "a CLIP that failed to load must not be passed"
         assert sorted(tried) == [CLIP, T5], tried
         assert P._TEXT_ENCODER_ACTIVE == {T5: t5, CLIP: ""}, P._TEXT_ENCODER_ACTIVE
         m = P._gen_meta("txt2img", "p")

@@ -68,7 +68,7 @@ def test_no_change_is_a_noop():
     _reset([(a, 1.0)], [(a, 1.0)])
     pipe = FakePipe()
     assert P._apply_loras(pipe) is True
-    assert pipe.calls == [], "rien ne doit bouger si la combinaison est identique"
+    assert pipe.calls == [], "nothing must move when the combination is identical"
 
 
 def test_weight_only_change_uses_set_adapters():
@@ -160,7 +160,7 @@ def test_set_loras_does_not_free_the_pipe():
     P._LOADED_KEY = ("repo", None, "none")
     P.set_loras([(a, 0.7)])
     assert P.LORAS == [(a, 0.7)]
-    assert P._BASE_PIPE is sentinel, "set_loras ne doit pas liberer le pipe (pas de reload)"
+    assert P._BASE_PIPE is sentinel, "set_loras must not release the pipe (no reload)"
     assert P._LOADED_KEY == ("repo", None, "none")
     P._BASE_PIPE = None
 
@@ -169,7 +169,7 @@ def test_base_cache_key_excludes_loras():
     """The cache key must no longer depend on the LoRAs (otherwise a reload on every change)."""
     import inspect
     src = inspect.getsource(P._ensure_base)
-    assert "tuple(LORAS)" not in src, "les LoRA ne doivent pas faire partie de la cle de cache"
+    assert "tuple(LORAS)" not in src, "the LoRAs must not be part of the cache key"
 
 
 if __name__ == "__main__":

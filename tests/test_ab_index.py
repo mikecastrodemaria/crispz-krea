@@ -58,8 +58,8 @@ def test_second_pass_uses_cache():
         second = len(calls)
     finally:
         AB._read_image_meta = real
-    assert first == 6, f"1re passe doit lire les 6 images, lu {first}"
-    assert second == 0, f"2e passe doit tout prendre au cache, relu {second}"
+    assert first == 6, f"the first pass must read the 6 images, read {first}"
+    assert second == 0, f"the 2nd pass must take everything from the cache, re-read {second}"
 
 
 def test_modified_image_is_reread():
@@ -77,7 +77,7 @@ def test_modified_image_is_reread():
         AB.ab_reindex(d, gen_thumbs=False)
     finally:
         AB._read_image_meta = real
-    assert len(calls) == 1, f"seule l'image modifiee doit etre relue, {len(calls)} lues"
+    assert len(calls) == 1, f"only the modified image should be re-read, {len(calls)} read"
     assert calls[0].endswith("img2.png")
 
 
@@ -104,7 +104,7 @@ def test_deleted_images_leave_the_cache():
     AB.ab_reindex(d, gen_thumbs=False)
     cache = json.load(open(os.path.join(d, "_index", "meta_cache.json"), encoding="utf-8"))
     files = cache["files"]
-    assert len(files) == 3, f"le cache doit suivre les suppressions, {len(files)} entrees"
+    assert len(files) == 3, f"the cache must follow the deletions, {len(files)} entries"
     assert not any(k.endswith("img0.png") for k in files)
 
 
@@ -113,7 +113,7 @@ def test_corrupt_cache_is_ignored_not_fatal():
     AB.ab_reindex(d, gen_thumbs=False)
     p = os.path.join(d, "_index", "meta_cache.json")
     with open(p, "w", encoding="utf-8") as f:
-        f.write("{ ceci n'est pas du json")
+        f.write("{ this is not json")
     n, _idx, _j = AB.ab_reindex(d, gen_thumbs=False)   # must not raise
     assert n == 3
     json.load(open(p, encoding="utf-8"))               # rewritten, valid
@@ -212,7 +212,7 @@ def test_reindex_and_hook_produce_the_same_entry_shape():
     from_hook = json.load(open(os.path.join(sub, "manifest.json"),
                                encoding="utf-8"))["images"][0]
     assert set(from_reindex) == set(from_hook), \
-        f"cles differentes: {set(from_reindex) ^ set(from_hook)}"
+        f"different keys: {set(from_reindex) ^ set(from_hook)}"
 
 
 if __name__ == "__main__":
