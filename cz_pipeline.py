@@ -262,6 +262,40 @@ def _gpu_serial(fn):
             return fn(*args, **kwargs)
     return _locked
 
+
+def _gpu_exclusive(fn):
+    """Decorator for the setters that RELEASE the shared pipeline (free_vram and the three
+    that call it). Doing that under a running denoise loop pulls the weights out from under
+    it; the scheduler race showed what touching the shared pipe mid-render costs.
+
+    Unlike the sampler, these cannot be DEFERRED: you pressed Free VRAM, or changed the
+    encoder, to have it happen -- so they WAIT. The wait is announced, because a handler
+    blocked for a whole render looks frozen otherwise. The try-acquire first keeps the
+    common case silent.
+
+    RLock -> a call from INSIDE a generation goes straight through: retry_on_oom and
+    _consume_vram_downgrade both free the VRAM on the generation's own thread, and that
+    thread is between two pipeline calls, not inside one.
+
+    NOT applied to set_loras() nor set_zimage_transformer(): checked, they only write a
+    global that the next _ensure_base reads under the lock, so a running render is not
+    affected. A PAIR of setters is still two operations, though -- nothing makes
+    set_zimage_transformer('') + set_zimage_model(x) atomic together.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def _locked(*args, **kwargs):
+        if not _GPU_LOCK.acquire(blocking=False):
+            _log(f"{fn.__name__}: waiting for the render in progress (releasing the "
+                 f"shared pipeline now would break it) ...")
+            _GPU_LOCK.acquire()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _GPU_LOCK.release()
+    return _locked
+
 # Seed handling (Fooocus-style):
 #  _LAST_SEED         = the CONCRETE seed of the last render (a random -1 is resolved to a
 #                       real value) -> the "Reuse last seed" button + honest metadata.
@@ -624,6 +658,7 @@ def request_stop():
     return "Stopping..."
 
 
+@_gpu_exclusive
 def set_zimage_model(repo_or_path):
     """Changes the Flux model. An HF repo / diffusers folder -> BASE_REPO.
     A single-file checkpoint (a Civitai .safetensors, a .gguf) -> a transformer override."""
@@ -653,7 +688,7 @@ def set_zimage_transformer(path):
     path = path or None
     if path != ZIMAGE_TRANSFORMER:
         ZIMAGE_TRANSFORMER = path
-        _log(f"Flux transformer -> {path or '(repo de base)'} "
+        _log(f"Flux transformer -> {path or '(base repo)'} "
              "-> transformer swap on next run (base components kept)")
 
 
@@ -970,6 +1005,7 @@ def list_cached_text_encoders(component="text_encoder_2", base=None):
     return out
 
 
+@_gpu_exclusive
 def set_text_encoder(component, src):
     """Picks the `component` encoder ('text_encoder_2' = T5, 'text_encoder' = CLIP;
     src '' = the base repo's). A change RELEASES the pipeline -- the encoder loads with it,
@@ -1676,6 +1712,7 @@ def check_omni_available():
             "editing, use the **crispz-qwen-edit** variant (Qwen-Image-Edit).")
 
 
+@_gpu_exclusive
 def set_offload_mode(mode):
     """Changes the CPU offload mode. Invalidates the pipe (the hooks are set at load
     time). An unknown value -> 'auto' (never 'none': the fallback must be the SAFE mode)."""
@@ -1804,6 +1841,7 @@ def _consume_vram_downgrade():
     return True
 
 
+@_gpu_exclusive
 def free_vram():
     """Releases the base pipeline + the derived pipelines and gives the VRAM back
     (step 3: unload on idle or the /unload endpoint). Lazy reload."""
