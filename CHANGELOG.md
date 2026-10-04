@@ -17,6 +17,17 @@ parameter lives), so the render runs LoRA-free rather than not at all. The hot-s
 fallback also wipes the half-injected adapters instead of leaving them for the next load to
 reuse under the same `cz_lora_i` names.
 
+## Unreleased — UI: no more spell-check popup over the dropdowns
+
+A Gradio dropdown is an `<input role="listbox">` holding the current value — here a file
+name. The browser spell-checked it and dropped its suggestion bar straight over the open
+LoRA list. The injected JS now sets `spellcheck="false"` (plus `autocorrect`,
+`autocapitalize` and `autocomplete` off) on those inputs, on load and through a
+`MutationObserver` for the ones Gradio mounts later or rebuilds when their choices change.
+
+`role="listbox"` matches the closed lists and nothing else in this UI: the prompts are
+`<textarea>`s and keep their spell-check. The debounce uses `setTimeout` and not
+`requestAnimationFrame`, which is paused while the tab is hidden.
 ## Unreleased — The app's own messages are in English
 
 Part of what the app printed was still French, inside an otherwise English interface:
