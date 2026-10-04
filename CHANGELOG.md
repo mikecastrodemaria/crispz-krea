@@ -17,6 +17,25 @@ parameter lives), so the render runs LoRA-free rather than not at all. The hot-s
 fallback also wipes the half-injected adapters instead of leaving them for the next load to
 reuse under the same `cz_lora_i` names.
 
+## Unreleased — LoRA: a misfiled SDXL file is skipped, an FP8 file is upcast
+
+**The wall.** 39 LoRAs of the 406 in the folder killed the render with
+`ValueError: Incompatible keys detected:` followed by the two thousand key names diffusers
+could not map. The UI reported a failed hot-swap and paid for it with a **full model
+reload — on every render**, since the slot stayed selected.
+
+**What they actually were.** Not a converter bug: **38 are Stable Diffusion / SDXL LoRAs**
+sitting in the Flux folder. Their keys name an SD UNet (`input_blocks` / `middle_block` /
+`output_blocks`, or `down_blocks` / `mid_block` / `up_blocks`) which has no counterpart in
+FLUX.1 — nothing in them can apply. They are now recognised from the **header alone** (no
+tensor read) and skipped with a line saying what the file is and what to do with it. The
+`lora_te*` CLIP keys they also carry were never the problem: diffusers handles those.
+
+**The 39th** is a real Flux LoRA stored in FP8, which died on
+`"mul_cpu_reduced_float" not implemented for 'Float8_e4m3fn'` — diffusers scales the
+weights by alpha/rank on CPU before the load. Its tensors are upcast to bf16 first, which
+is what they become in VRAM anyway (FP8 only ever saved disk here).
+
 ## Unreleased — UI: no more spell-check popup over the dropdowns
 
 A Gradio dropdown is an `<input role="listbox">` holding the current value — here a file

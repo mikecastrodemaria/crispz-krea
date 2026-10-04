@@ -53,7 +53,13 @@ SwarmUI. On top of crispz's upscaler it adds:
 - **Models**: one **Z-Image checkpoint** dropdown merging the official base repos
   (Turbo / Z-Image) with single-file `.safetensors` from a main **and** an optional
   extra folder, a **Transformer override** (diffusers repo/folder, e.g. Juggernaut-Z),
-  and **multi-LoRA** (configurable **1–10 slots** + trigger words). Picking a model also
+  and **multi-LoRA** (configurable **1–10 slots** + trigger words). A LoRA is checked
+  before the load, from its header alone: a **Stable Diffusion / SDXL LoRA** misfiled in
+  the Flux folder is **skipped with a reason** (its UNet has no counterpart in FLUX.1 —
+  diffusers otherwise died on `Incompatible keys detected:` followed by two thousand key
+  names, which cost a full model reload on *every* render while the slot stayed selected),
+  and an **FP8 LoRA is upcast to bf16** (diffusers scales the weights by alpha/rank on CPU,
+  which Float8 does not implement). Picking a model also
   auto-syncs the Performance preset. Supported formats: BF16/FP16, **GGUF quants**
   (city96/ComfyUI-GGUF exports, stay quantized in VRAM) and ComfyUI **FP8 / FP8-scaled /
   INT8-scaled** builds like `flux1-krea-dev_fp8_scaled` (dequantized to bf16 at load —

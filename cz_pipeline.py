@@ -1903,6 +1903,75 @@ def release_vram(offload=False, why=""):
         _dbg(f"release_vram: {e}")
 
 
+# ----------------------------------------------------------------------------
+# A LoRA trained for ANOTHER architecture.
+#
+# A Stable Diffusion / SDXL LoRA dropped in the Flux folder is not a file to repair: its
+# UNet has no counterpart in FLUX.1 at all. Handed to diffusers it dies on
+# "Incompatible keys detected:" followed by the two thousand key names it could not map,
+# which the UI reports as a failed hot-swap and pays for with a full model reload -- for
+# every render, since the slot stays selected.
+# Recognising it costs one header read (no tensor): the SD/SDXL UNet names its stages
+# input_blocks / middle_block / output_blocks (original and kohya) or down_blocks /
+# up_blocks / mid_block (diffusers), none of which exist in a Flux LoRA (double_blocks,
+# single_blocks, transformer_blocks).
+_SD_UNET_MARKERS = ("input_blocks", "middle_block", "output_blocks",
+                    "down_blocks", "mid_block", "up_blocks")
+
+
+def foreign_lora_reason(path):
+    """'' when the file can be handed to diffusers, otherwise a one-line reason to log and
+    skip it. Unreadable files return '' -- diffusers reports those better than we would."""
+    try:
+        from safetensors import safe_open
+        with safe_open(path, framework="pt") as f:
+            keys = list(f.keys())
+    except Exception as e:
+        _dbg(f"LoRA architecture check skipped for {os.path.basename(path)}: {e}")
+        return ""
+    if any(m in k for k in keys for m in _SD_UNET_MARKERS):
+        te = sum(1 for k in keys if k.startswith(("lora_te", "lora_te1", "lora_te2")))
+        return ("it is a Stable Diffusion / SDXL LoRA (its keys name an SD UNet: "
+                + ", ".join(sorted({m for m in _SD_UNET_MARKERS
+                                    for k in keys if m in k}))
+                + f"{f', plus {te} CLIP text-encoder keys' if te else ''}). "
+                  "Nothing in it maps onto FLUX.1 -- move it out of the Flux LoRA folder.")
+    return ""
+
+
+def _lora_source(path):
+    """What to hand load_lora_weights for `path`: (source, extra kwargs).
+
+    By default the FOLDER + weight_name -- diffusers refuses a full path offline
+    (HF_HUB_OFFLINE: "must specify a weight_name"), and that route is the tested one.
+
+    An FP8 LoRA is upcast to bf16 first: diffusers' converter multiplies the weights by
+    alpha/rank, and that multiplication is not implemented for Float8_e4m3fn on CPU
+    ('"mul_cpu_reduced_float" not implemented'), so the load dies before reaching the
+    model. The weights are bf16 in VRAM anyway -- FP8 only ever saved disk here.
+"""
+    try:
+        from safetensors import safe_open
+        with safe_open(path, framework="pt") as f:
+            fp8 = any(str(f.get_slice(k).get_dtype()).lower().startswith(("f8", "float8"))
+                      for k in f.keys())
+    except Exception as e:
+        _dbg(f"LoRA dtype check skipped for {os.path.basename(path)}: {e}")
+        fp8 = False
+    if not fp8:
+        return (os.path.dirname(path) or "."), {"weight_name": os.path.basename(path)}
+    from safetensors.torch import load_file
+    sd = load_file(path)
+    n = 0
+    for k, v in sd.items():
+        if v.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            sd[k] = v.to(DTYPE)
+            n += 1
+    _log(f"LoRA {os.path.basename(path)}: {n} FP8 tensor(s) upcast to bf16 "
+         f"(diffusers cannot scale Float8 on CPU)")
+    return sd, {}
+
+
 def _load_lora(pipe, *args, **kwargs):
     """pipe.load_lora_weights with REAL tensors (low_cpu_mem_usage=False).
 
@@ -2281,13 +2350,19 @@ def _apply_loras(pipe, force=False):
         names, weights = [], []
         for i, (p, w) in enumerate(LORAS):
             if os.path.isfile(p):
+                # A LoRA for another architecture cannot apply here: skip it with a
+                # reason rather than letting diffusers fail and cost a full reload.
+                why = foreign_lora_reason(p)
+                if why:
+                    _log(f"LoRA ignored: {os.path.basename(p)} -- {why}")
+                    continue
                 an = f"cz_lora_{i}"
                 _log(f"applying LoRA: {os.path.basename(p)} (weight {w})")
-                # Pass the folder + weight_name (not the full path): otherwise
-                # diffusers in offline mode (HF_HUB_OFFLINE) refuses with "must specify a
-                # weight_name". Works online too, and with a direct local file.
-                _load_lora(pipe, os.path.dirname(p) or ".",
-                           weight_name=os.path.basename(p), adapter_name=an)
+                # _lora_source gives the folder + weight_name (diffusers offline
+                # refuses a full path: "must specify a weight_name"), or an upcast
+                # state_dict for an FP8 file.
+                src, src_kw = _lora_source(p)
+                _load_lora(pipe, src, adapter_name=an, **src_kw)
                 names.append(an)
                 weights.append(float(w))
             else:
