@@ -4,6 +4,19 @@ All notable changes to crispz-krea. One versioned entry per feature.
 The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browser tab title.
 
 
+
+## Unreleased — LoRA: a meta parameter no longer poisons every later load
+
+A LoRA load can leave parameters on the `meta` device. One is terminal: `pipe.to(DEVICE)`
+raises `Cannot copy out of meta tensor; no data!`, and peft builds each adapter on the
+device of the layer it wraps, so every later LoRA inherits it and loops on *"copying from a
+non-meta parameter ... which is a no-op"*. `_meta_params` now checks the transformer
+**before** any `.to(DEVICE)`: a cached pipe is reloaded from disk, a fresh one is reloaded
+without any adapter (and without reusing the transformer override, which is where the meta
+parameter lives), so the render runs LoRA-free rather than not at all. The hot-swap
+fallback also wipes the half-injected adapters instead of leaving them for the next load to
+reuse under the same `cz_lora_i` names.
+
 ## Unreleased — The app's own messages are in English
 
 Part of what the app printed was still French, inside an otherwise English interface:

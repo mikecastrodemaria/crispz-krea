@@ -2200,6 +2200,31 @@ def _lora_names(loras):
     return [f"cz_lora_{i}" for i in range(len(loras))]
 
 
+def _meta_params(model, limit=8):
+    """Names of `model`'s parameters/buffers left on the 'meta' device (declared, no data).
+    Capped at `limit`: we only need to know THAT some exist, plus a few names for the log.
+
+    One meta parameter is terminal. pipe.to(DEVICE) raises "Cannot copy out of meta tensor;
+    no data!", and peft builds an adapter on the device of the layer it wraps, so every
+    later LoRA load inherits meta and loops on "copying from a non-meta parameter in the
+    checkpoint to a meta parameter in the current model, which is a no-op". Nothing can
+    repair it in place: the model has to be reloaded from disk.
+"""
+    if model is None:
+        return []
+    found = []
+    try:
+        for gen in (model.named_parameters(), model.named_buffers()):
+            for name, t in gen:
+                if getattr(getattr(t, "device", None), "type", "") == "meta":
+                    found.append(name)
+                    if len(found) >= limit:
+                        return found
+    except Exception as e:
+        _dbg(f"_meta_params: {e}")
+    return found
+
+
 def _clear_loras(pipe):
     """Removes EVERY LoRA adapter from the pipe to start from a clean state.
 
@@ -2275,6 +2300,10 @@ def _apply_loras(pipe, force=False):
         return True
     except Exception as e:
         _log(f"LoRA hot-swap failed ({e}); falling back to a full reload")
+        # The adapters are left half-injected: reusing that state would apply the wrong
+        # LoRA (the cz_lora_i names are reused) or copy from a 'meta' parameter. Wipe it
+        # BEFORE restoring the offload, while diffusers still has its hooks off.
+        _clear_loras(pipe)
         # diffusers removed the offload hooks before loading and did not get to put
         # them back: without this, the pipe stays on the CPU and EVERY later render fails,
         # including the ones that have nothing to do with this LoRA.
@@ -2367,10 +2396,19 @@ def _ensure_base():
         # type cuda", and every later one too.
         restore_offload(_BASE_PIPE, "an earlier failure")
         if _apply_loras(_BASE_PIPE):
-            _dbg("base pipeline: reusing cached (no reload)")
-            return _BASE_PIPE
-        _dbg("base pipeline: LoRA hot-swap failed -> free + reload")
-        free_vram()
+            # A LoRA load can report success and still have left parameters on 'meta'
+            # (see _meta_params). Reusing the pipe would fail on the first .to() and
+            # contaminate every later adapter -> reload from disk instead.
+            _meta = _meta_params(getattr(_BASE_PIPE, "transformer", None))
+            if not _meta:
+                _dbg("base pipeline: reusing cached (no reload)")
+                return _BASE_PIPE
+            _log(f"meta parameters on the cached transformer ({len(_meta)}, e.g. "
+                 f"{_meta[0]}) -> forced reload from disk")
+            free_vram()
+        else:
+            _dbg("base pipeline: LoRA hot-swap failed -> free + reload")
+            free_vram()
     elif _BASE_PIPE is not None:
         # Only the transformer changes (same base repo + same offload)? -> reload the
         # transformer ONLY and keep VAE + CLIP/T5 encoders in VRAM.
@@ -2415,8 +2453,18 @@ def _ensure_base():
     _off_label = (f"auto->{_resolve_auto()}" if OFFLOAD_MODE == "auto" else OFFLOAD_MODE)
     _log(f"loading FLUX.1 Krea base: {BASE_REPO} (offload={_off_label}, dtype=bf16) ... "
          "repo GATED: needs HF login (HF_TOKEN) on first download, then cached")
-    pipe = _load_monitor(f"FLUX.1 Krea base {BASE_REPO}",
-                         lambda: FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs))
+    def _fresh_base(fresh_transformer=False):
+        """Builds the base pipe. fresh_transformer=True also reloads the transformer
+        OVERRIDE: a 'meta' parameter lives in that module, so handing the same instance
+        back to from_pretrained would carry the problem over. Dropping it from kwargs
+        first lets the broken one be collected."""
+        if fresh_transformer and kwargs.get("transformer") is not None:
+            kwargs.pop("transformer", None)
+            gc.collect()
+            kwargs["transformer"] = _load_transformer()
+        return FluxPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE, **kwargs)
+
+    pipe = _load_monitor(f"FLUX.1 Krea base {BASE_REPO}", _fresh_base)
     _TEXT_ENCODER_ACTIVE = active          # what REALLY runs (metadata, cache)
     # Capture the scheduler's native (flow-matching) config -> the base for building
     # the other samplers (euler/dpm2a/dpmpp2m) without losing shift/flow params.
@@ -2429,6 +2477,22 @@ def _ensure_base():
     _APPLIED_LORAS = []
     if LORAS:
         _apply_loras(pipe, force=True)
+        # The return value used to be ignored: a half-injected adapter went straight to the
+        # .to(DEVICE) / enable_*_cpu_offload below and raised "Cannot copy out of meta
+        # tensor; no data!". A meta parameter cannot be repaired in place -> the model is
+        # reloaded from disk, without any adapter (the render then runs LoRA-free rather
+        # than not at all, and the log says so).
+        _meta = _meta_params(getattr(pipe, "transformer", None))
+        if _meta:
+            _log(f"meta parameters left after the LoRA load ({len(_meta)}, e.g. "
+                 f"{_meta[0]}) -> reloading {BASE_REPO} from disk WITHOUT any adapter")
+            del pipe
+            gc.collect()
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            _APPLIED_LORAS = []
+            pipe = _load_monitor(f"FLUX.1 Krea base {BASE_REPO} (reload, no LoRA)",
+                                 lambda: _fresh_base(fresh_transformer=True))
     # Attention slicing: SET PER CALL through _set_slicing (according to the
     # resolution processed), NOT at load time. In tiles/at 1024 -> slicing OFF = native SDPA
     # attention, fast (like ComfyUI). Whole-image 2K+ -> slicing ON to avoid the 32 GB VRAM
