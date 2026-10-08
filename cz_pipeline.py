@@ -672,7 +672,7 @@ def set_zimage_model(repo_or_path):
             ZIMAGE_TRANSFORMER = repo_or_path
             _log("Flux transformer (single-file) changed -> transformer swap on next run")
     elif repo_or_path != BASE_REPO:
-        # Le repo de base change: VAE/encodeurs/tokenizer changent aussi -> reload complet.
+        # The base repo changes: VAE/encoders/tokenizer change too -> a full reload.
         BASE_REPO = repo_or_path
         free_vram()
         _log("Flux base repo changed -> will reload")
@@ -3072,7 +3072,7 @@ def _refine_whole(pipe, image, denoise, steps, prompt, seed):
     h = round_to_multiple(image.height, 16)
     # Two attempts at most: the VRAM guard at the first step (see generate), then a retry in 'model'.
     for _attempt in (0, 1):
-        _set_slicing(pipe, max(image.size))   # a reposer sur le pipe recharge du retry
+        _set_slicing(pipe, max(image.size))   # to set again on the pipe the retry reloaded
         out = _pipe_guarded(
             pipe,
             prompt=prompt or "",

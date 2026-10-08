@@ -1427,7 +1427,7 @@ def _gallery_delete(path, output_dir, sort="Newest", filt=""):
     if path and os.path.isfile(path):
         try:
             os.remove(path)
-            if os.path.isfile(path + ".json"):   # supprime aussi le sidecar
+            if os.path.isfile(path + ".json"):   # the sidecar goes too
                 os.remove(path + ".json")
             msg = f"Deleted {os.path.basename(path)}."
         except Exception as e:
