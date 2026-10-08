@@ -2452,6 +2452,53 @@ def _swap_transformer(pipe):
         return False
 
 
+_OFFLOAD_LADDER = ("none", "model", "sequential")
+
+
+def _place_pipe(pipe, off, what="base"):
+    """Puts the pipeline where the offload mode asks, and survives a card that refuses.
+
+    In 'none' the whole model is copied onto the card at once. With a big model that can
+    fail in the DRIVER rather than in torch's allocator -- "CUDA error: out of memory",
+    or the opaque "CUDA error: unknown error" -- and the user used to get a raw traceback
+    with nothing to act on. Every mode further down the ladder needs less VRAM ('model'
+    streams one model at a time, 'sequential' one layer), so we walk down it and say what
+    happened. If they all fail, the FIRST error is re-raised: it is the one that describes
+    the mode that was actually asked for.
+
+    Returns the pipeline: .to() returns a new reference, the two enable_* do not."""
+    if DEVICE != "cuda":
+        return pipe.to(DEVICE)
+    start = _OFFLOAD_LADDER.index(off) if off in _OFFLOAD_LADDER else 0
+    first = None
+    for i, mode in enumerate(_OFFLOAD_LADDER[start:], start):
+        try:
+            if mode == "model":
+                pipe.enable_model_cpu_offload()
+            elif mode == "sequential":
+                pipe.enable_sequential_cpu_offload()
+            else:
+                pipe = pipe.to(DEVICE)
+            if first is not None:
+                _log(f"{what}: offload '{mode}' worked. Set `default_cpu_offload` to "
+                     f"'{mode}' (or 'auto') to go straight there next time.")
+            return pipe
+        except Exception as e:
+            if first is None:
+                first = e
+            nxt = _OFFLOAD_LADDER[i + 1:]
+            _log(f"{what}: the card refused offload '{mode}' ({type(e).__name__}: "
+                 f"{str(e).splitlines()[0]})."
+                 + (f" Trying '{nxt[0]}', which needs less VRAM." if nxt
+                    else " No mode left to try."))
+            try:
+                pipe.to("cpu")      # undo a half-done move before the next attempt
+            except Exception:
+                pass
+            release_vram(why=f"{what} placement in '{mode}'")
+    raise first
+
+
 def _ensure_base():
     """Loads (when needed) the base txt2img pipeline. Handles the single-file
     (Civitai/Flux/GGUF) transformer and the offload. Cached by (repo, transformer, offload).
@@ -2582,12 +2629,7 @@ def _ensure_base():
     if _off != _base_off:
         _log(f"GGUF base: offload '{_base_off}' forced to '{_off}' (a GGUF does not run "
              f"on the GPU in none/sequential -> otherwise CPU, ~500s/step)")
-    if DEVICE == "cuda" and _off == "model":
-        pipe.enable_model_cpu_offload()
-    elif DEVICE == "cuda" and _off == "sequential":
-        pipe.enable_sequential_cpu_offload()
-    else:
-        pipe = pipe.to(DEVICE)
+    pipe = _place_pipe(pipe, _off)
     # VAE tiling/slicing: essential for img2img/upscale. The VAE encode/decode of a
     # 1024 tile + the whole model in VRAM (a ~12B Flux transformer + the CLIP/T5 encoders)
     # can overflow the VRAM -> a spill into shared RAM -> very slow. Tiling the VAE caps that

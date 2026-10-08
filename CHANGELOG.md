@@ -5,6 +5,21 @@ The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browse
 
 
 
+## Unreleased — A card that refuses an offload mode no longer ends in a traceback
+
+In offload `none` the whole model is copied onto the card at once. With a big model that
+can fail in the DRIVER rather than in torch's allocator — `CUDA error: out of memory`, or
+the opaque `CUDA error: unknown error` — and the answer was a raw traceback with nothing
+to act on.
+
+The placement now walks DOWN the offload ladder, each mode needing less VRAM than the one
+before: `none` → `model` (one model at a time on the card) → `sequential` (one layer at a
+time). The log says which mode worked and which setting to change to go straight there
+next time. When every mode fails, the FIRST error is re-raised — the one describing the
+mode that was actually asked for, not the fallback's.
+
+Tests in `tests/test_offload_fallback.py`.
+
 ## Unreleased — CivitAI finds the checkpoints kept outside the app folder
 
 🔎 Fetch from CivitAI answered `model file not found` for every checkpoint of the
