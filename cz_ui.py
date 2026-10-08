@@ -882,6 +882,95 @@ def _ui_kw_to_prompt(prompt_text, keywords):
     return gr.update(value=base + kw)
 
 
+# ----- A CivitAI search (Models > LoRA), to download a LoRA by name -----
+# CivitAI does NOT spell the base model the way this app names it: the LoRAs that load here
+# come back labelled 'Flux.1 Krea', 'Flux.1 D', 'Flux.1 S'. Those labels are read from the API and from the
+# sidecars of a real LoRA folder, not guessed -- and that is why the comparison below is a
+# normalised PREFIX. An equality match against the app's own name for the base finds
+# NOTHING, which is what the "only" filter used to do in crispz-studio: ticked by default,
+# it silently emptied every search.
+_CIV_FAMILY = "Flux.1"           # what loads here
+_CIV_PREFERRED = "Flux.1 Krea"          # ranked first inside the family ("" = no sub-tier)
+_CIV_FILTER_LABEL = "Flux.1 only"
+
+
+def _civitai_base_prefixes():
+    """(the family prefix, the preferred sub-base), normalised, for ranking the candidates."""
+    return (cz_civitai._norm_base(_CIV_FAMILY), cz_civitai._norm_base(_CIV_PREFERRED))
+
+
+def _ui_civitai_lora_search(query, family_only):
+    """Searches CivitAI for a LoRA by name. Returns (the field, the candidates, the state,
+    the status): the state carries the candidate dicts (label -> candidate) for the Download
+    button. The candidates of the preferred base come first, then the rest of the family,
+    then the foreign bases -- which are shown, not hidden, because the base is in the label
+    and a foreign one is sometimes what you were looking for."""
+    q = (query or "").strip()
+    if not q:
+        return (gr.update(), gr.update(choices=[], value=None), {},
+                "Type a LoRA name to search on CivitAI.")
+    cands = cz_civitai.search_loras(q, limit=10)
+    fam, pref = _civitai_base_prefixes()
+
+    def _rank(c):
+        b = cz_civitai._norm_base(c.get("baseModel"))
+        if pref and b.startswith(pref):
+            return 0
+        return 1 if b.startswith(fam) else 2
+
+    cands.sort(key=_rank)                        # stable: CivitAI's own order is kept
+    if family_only:
+        cands = [c for c in cands
+                 if cz_civitai._norm_base(c.get("baseModel")).startswith(fam)]
+    if not cands:
+        hint = (f" with a {_CIV_FAMILY} base — untick '{_CIV_FILTER_LABEL}' to see the "
+                f"other bases (they will not load here)." if family_only else
+                ". Check the spelling, or the model may not be on CivitAI.")
+        return (gr.update(value=q), gr.update(choices=[], value=None), {},
+                f"No CivitAI result for **{q}**{hint}")
+    state, labels = {}, []
+    for c in cands:
+        size = f"{c['sizeKB'] / 1024:.0f} MB" if c.get("sizeKB") else "size ?"
+        label = (f"{c['modelName']} — {c['versionName']} [{c['baseModel'] or 'base ?'}] "
+                 f"— {size}"
+                 + (f" — by {c['creator']}" if c.get("creator") else "")
+                 + (" — NSFW" if c.get("nsfw") else ""))
+        if label in state:                       # two versions with the same label
+            label += f" (v{c['versionId']})"
+        state[label] = c
+        labels.append(label)
+    note = ""
+    if pref:
+        n_pref = sum(1 for c in cands
+                     if cz_civitai._norm_base(c.get("baseModel")).startswith(pref))
+        note = (f" {n_pref} with a {_CIV_PREFERRED} base." if n_pref
+                else f" None with a {_CIV_PREFERRED} base — check the base in brackets.")
+    return (gr.update(value=q), gr.update(choices=labels, value=labels[0]), state,
+            f"{len(labels)} candidate(s) for **{q}** — pick one, then Download.{note} "
+            f"[Open on CivitAI]({cands[0]['url']})")
+
+
+def _ui_civitai_lora_download(label, state, progress=gr.Progress()):
+    """Downloads the chosen candidate into LORAS_DIR (a verified SHA256 + preview/triggers),
+    then refreshes the choices of ALL the LoRA slots. A failure = a message, never a crash."""
+    cand = (state or {}).get(label)
+    if not cand:
+        return tuple(gr.update() for _ in range(MAX_LORA_SLOTS)) \
+            + ("Search first, then pick a candidate to download.",)
+
+    def _prog(_phase, frac, text):
+        progress(frac if frac is not None else 0.0, desc=text)
+
+    res = cz_civitai.download_model_file(cand, cz_pipeline.LORAS_DIR, progress=_prog)
+    if not res.get("success"):
+        return tuple(gr.update() for _ in range(MAX_LORA_SLOTS)) \
+            + ("❌ " + res.get("message", "download failed"),)
+    rel = os.path.relpath(res["path"], cz_pipeline.LORAS_DIR).replace(os.sep, "/")
+    msg = f"✅ {res['message']}  \nSelect **{rel}** in a LoRA slot."
+    lr = ["None"] + list_loras()
+    return tuple(gr.update(choices=lr) for _ in range(MAX_LORA_SLOTS)) + (msg,)
+
+
 def _ui_check_omni():
     return check_omni_available()
 
@@ -1490,6 +1579,20 @@ def _ui_set_ab_cache(path):
             "launch), then Rebuild ALL thumbnails.")
 
 
+def _civitai_model_path(rel, kind):
+    """Absolute path of an Asset Browser entry, from its path RELATIVE to its own folder.
+
+    The catalogue lists the extra checkpoints folder too (_checkpoint_dirs). Joining that
+    relative path to the MAIN folder alone answered "model file not found" for every
+    checkpoint stored elsewhere. LoRAs have a single folder in this fork (no
+    'loras_extra_dirs'), so for them the main folder IS the whole list."""
+    rel = str(rel or "").strip()
+    if not rel:
+        return ""
+    return (os.path.join(cz_pipeline.LORAS_DIR, rel) if kind == "loras"
+            else cz_pipeline.resolve_checkpoint(rel))
+
+
 def _api_civitai_fetch(rel, kind):
     """API (Asset Browser): starts a model's CivitAI enrichment IN THE BACKGROUND and
     returns the job's key immediately. The client then polls civitai_progress.
@@ -1497,8 +1600,7 @@ def _api_civitai_fetch(rel, kind):
     phase, then rebuilds the LoRAs/Models catalogue."""
     try:
         import cz_civitai
-        mdir = cz_pipeline.LORAS_DIR if kind == "loras" else cz_pipeline.CHECKPOINTS_DIR
-        path = os.path.join(mdir, rel or "")
+        path = _civitai_model_path(rel, kind)
         key = os.path.abspath(path)
         _bg_job_set(key, phase="start", frac=None, text="Starting…",
                          done=False, ok=False, message="")
@@ -1593,8 +1695,11 @@ def _api_civitai_fetch_all(kind):
                 api_key = getattr(cz_civitai, "API_KEY", None)
                 summary = cz_civitai_batch.run(
                     kind=kind, api_key=api_key, progress=_progress,
-                    loras_dir=cz_pipeline.LORAS_DIR,           # the LIVE folders (changeable in the UI)
-                    checkpoints_dir=cz_pipeline.CHECKPOINTS_DIR)
+                    # the LIVE folders (changeable in the UI), the EXTRA checkpoints
+                    # folder included: the catalogue shows it, so "fetch all missing" must
+                    # cover it. One LoRA folder in this fork -> it is the whole list.
+                    loras_dir=cz_pipeline.LORAS_DIR,
+                    checkpoints_dir=cz_pipeline._checkpoint_dirs())
                 try:
                     ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
                                      cz_pipeline._checkpoint_dirs())
@@ -3992,6 +4097,29 @@ def build_ui():
                                 lora_kw_btn = gr.Button("Get keywords", size="sm")
                                 lora_kw_to_prompt_btn = gr.Button("Add to prompt", size="sm", variant="primary")
                             lora_status = gr.Markdown("")
+                            with gr.Accordion("\U0001F50E Search CivitAI (download a LoRA)",
+                                              open=False):
+                                gr.Markdown(
+                                    "*Search a LoRA by name on CivitAI and download it into "
+                                    "the LoRA folder: SHA256 verified during the download, "
+                                    "preview and trigger words fetched afterwards. The base "
+                                    "model is shown in brackets — one that is not Flux.1 "
+                                    "will not load here.*")
+                                with gr.Row():
+                                    civ_lora_q = gr.Textbox(
+                                        show_label=False, scale=3, container=False,
+                                        placeholder="LoRA name to search on CivitAI")
+                                    civ_lora_famonly = gr.Checkbox(
+                                        value=True, label=_CIV_FILTER_LABEL, scale=1)
+                                    civ_lora_search_btn = gr.Button("Search", size="sm",
+                                                                    variant="primary", scale=1,
+                                                                    min_width=90)
+                                civ_lora_dd = gr.Dropdown(choices=[], value=None,
+                                                          label="Candidates (base model in brackets)")
+                                civ_lora_state = gr.State({})
+                                civ_lora_dl_btn = gr.Button("⬇ Download to LoRA folder",
+                                                            size="sm")
+                                civ_lora_status = gr.Markdown("")
 
                         with gr.Accordion("\U0001F3B2 Wildcards", open=False):
                             gr.Markdown("*`__name__` in the prompt -> a random line from name.txt "
@@ -4211,6 +4339,10 @@ def build_ui():
         lora_kw_btn.click(_ui_loras_keywords, lora_dds,
                           [lora_keywords_tb, lora_status])
         lora_kw_to_prompt_btn.click(_ui_kw_to_prompt, [prompt, lora_keywords_tb], [prompt])
+        civ_lora_search_btn.click(_ui_civitai_lora_search, [civ_lora_q, civ_lora_famonly],
+                                  [civ_lora_q, civ_lora_dd, civ_lora_state, civ_lora_status])
+        civ_lora_dl_btn.click(_ui_civitai_lora_download, [civ_lora_dd, civ_lora_state],
+                              lora_dds + [civ_lora_status])
         # ----- Presets (Settings) -----
         _preset_scalars = [prompt, negative, styles, width, height, gen_steps, guidance,
                            sampler_dd, schedule_dd, image_number, ckpt_dd, transformer_tb]

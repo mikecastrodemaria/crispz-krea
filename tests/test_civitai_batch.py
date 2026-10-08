@@ -91,8 +91,41 @@ def test_enrich_accounting(monkeypatch):
 
 def test_resolve_dirs_arg_priority():
     loras, cks = B.resolve_dirs(loras_dir="X:/L", checkpoints_dir="X:/C")
-    assert loras.replace("\\", "/").endswith("X:/L".replace("\\", "/")) or loras.endswith("L")
+    assert any(d.endswith("L") for d in loras), loras
     assert any(c.endswith("C") for c in cks)
+
+
+def _env(**kw):
+    """Poser/retirer des variables d'environnement, et rendre l'etat precedent."""
+    old = {k: os.environ.get(k) for k in kw}
+    for k, v in kw.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    return old
+
+
+def test_resolve_dirs_includes_the_extra_lora_folders():
+    """Le defaut qui rendait le lot muet: une bibliotheque hors du dossier de l'app."""
+    old = _env(LORAS_DIR="X:/L", LORAS_EXTRA_DIRS="Y:/Lib/Lora;Z:/autre")
+    try:
+        loras, _ = B.resolve_dirs()
+        assert len(loras) == 3, loras
+        assert loras[0].endswith("L"), loras
+        assert loras[1].endswith("Lora") and loras[2].endswith("autre"), loras
+    finally:
+        _env(**old)
+
+
+def test_collect_files_scans_every_lora_folder():
+    """La forme que passe l'explorateur: la liste vivante de ses dossiers."""
+    d1, d2 = tempfile.mkdtemp(), tempfile.mkdtemp()
+    os.makedirs(os.path.join(d2, "Style"), exist_ok=True)
+    open(os.path.join(d1, "a.safetensors"), "wb").write(b"x")
+    open(os.path.join(d2, "Style", "b.safetensors"), "wb").write(b"x")
+    files = B.collect_files("loras", loras_dir=[d1, d2])
+    assert [os.path.basename(f) for f in files] == ["a.safetensors", "b.safetensors"], files
 
 
 if __name__ == "__main__":
@@ -106,7 +139,8 @@ if __name__ == "__main__":
             for obj, name, val in reversed(self._undo):
                 setattr(obj, name, val)
     for fn in (test_apply_shard_partition, test_needs_enrich, test_collect_files_and_shard,
-               test_resolve_dirs_arg_priority):
+               test_resolve_dirs_arg_priority, test_resolve_dirs_includes_the_extra_lora_folders,
+               test_collect_files_scans_every_lora_folder):
         fn(); print(f"OK {fn.__name__}")
     mp = _MP()
     try:
