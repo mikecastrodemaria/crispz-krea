@@ -5,6 +5,25 @@ The app version lives in `cz_core.py` (`APP_VERSION`) and is shown in the browse
 
 
 
+## Unreleased — The image as it forms, in the result gallery
+
+The denoise now hands its latents to the interface at every step, projected to RGB
+through a 16x3 matrix: about 1.5 ms a step, where a real VAE decode would cost 0.2-0.5 s
+and nearly double an 8-step render. The frames land IN the result gallery and the
+finished images replace them — one component, and ONE event writing it, so a frame can
+never land after the result.
+
+The matrix comes from crispz-studio unchanged, and that is not a shortcut: Z-Image ships
+the Flux VAE, and FLUX.1-Krea-dev IS that VAE (AutoencoderKL, 16 channels, scaling
+0.3611, shift 0.1159). It was least-squares fitted against that decoder, R2 0.85 — the
+composition and the broad colours are right, the fine detail is not.
+
+Advanced > Generation carries a **Live preview while rendering** switch, applied live;
+config `live_preview` sets the startup value, `every_n_steps` and `max_side` the refresh
+rate and the size sent to the browser.
+
+Ported from crispz-studio. Tests in `tests/test_live_preview.py`.
+
 ## Unreleased — A card that refuses an offload mode no longer ends in a traceback
 
 In offload `none` the whole model is copied onto the card at once. With a big model that

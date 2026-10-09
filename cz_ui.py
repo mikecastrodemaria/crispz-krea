@@ -14,6 +14,8 @@ import gc
 import io
 import random
 import threading
+import contextvars
+import functools
 import warnings
 
 # Silences the Gradio DeprecationWarnings "pass theme/css/js to launch() instead":
@@ -138,6 +140,10 @@ ASPECT_RATIOS = {
 # Cost: 1.0 to 1.6 Mpix. Beyond ~1.3 Mpix it is slower, and a model trained around a million
 # pixels can drift in composition there (a duplicated subject) -- to be chosen when the
 # recipe you follow asks for it, not by default.
+# Live preview: how often the Generate handler looks at the denoise's slot for a new
+# frame. No ceiling is needed -- the loop ends when the render thread does.
+_LIVE_PREVIEW_POLL = 0.25
+
 # Fooocus-style Performance -> (gen_steps, guidance) for the loaded model.
 PERFORMANCE = {
     "Turbo (8 steps)":    (8, 0.0),
@@ -817,15 +823,19 @@ def _ui_set_lora_slots(n):
     return [gr.update(visible=(i < n)) for i in range(MAX_LORA_SLOTS)]
 
 
-def _refresh_loras(new_dir):
-    """Changes the loras folder + refreshes ALL the slots (N is configurable) + persists."""
+def _refresh_loras(new_dir, extra_dirs=""):
+    """Changes the loras folder (+ the 'a;b' extras) + refreshes ALL the slots (N is
+    configurable) + persists."""
     set_loras_dir(new_dir)
+    cz_pipeline.set_loras_extra_dirs(extra_dirs)
     try:
-        _save_prefs_keys({"loras_dir": cz_pipeline.LORAS_DIR})   # persiste -> survit au reboot
+        _save_prefs_keys({"loras_dir": cz_pipeline.LORAS_DIR,    # persists -> survives a reboot
+                          "loras_extra_dirs": list(cz_pipeline.LORAS_EXTRA_DIRS)})
     except Exception:
         pass
     lr = ["None"] + list_loras()
-    status = f"{len(lr) - 1} LoRA(s) in {cz_pipeline.LORAS_DIR} (saved)."
+    locs = " + ".join(cz_pipeline._lora_dirs())
+    status = f"{len(lr) - 1} LoRA(s) in {locs} (saved)."
     return tuple(gr.update(choices=lr) for _ in range(MAX_LORA_SLOTS)) + (status,)
 
 
@@ -843,7 +853,7 @@ def _apply_loras(*vals):
 def _path_for_lora(name):
     if not name or name in ("None", "none", ""):
         return None
-    return name if os.path.isabs(name) else os.path.join(cz_pipeline.LORAS_DIR, name)
+    return cz_pipeline.resolve_lora_path(name)
 
 
 def _lora_keywords_for(names):
@@ -1019,6 +1029,7 @@ def _save_paths_to_prefs(esrgan_dir, checkpoints_dir=None, checkpoints_extra_dir
                       "checkpoints_dir": cz_pipeline.CHECKPOINTS_DIR,
                       "checkpoints_extra_dir": cz_pipeline.CHECKPOINTS_EXTRA_DIR,
                       "loras_dir": cz_pipeline.LORAS_DIR,
+                      "loras_extra_dirs": list(cz_pipeline.LORAS_EXTRA_DIRS),
                       "wildcards_dir": cz_prompt.WILDCARDS_DIR})
     return (f"Saved to {PREFS_PATH}: esrgan_dir, zimage_model, checkpoints_dir, "
             f"checkpoints_extra_dir, loras_dir, wildcards_dir={cz_prompt.WILDCARDS_DIR}")
@@ -1501,7 +1512,7 @@ def _ui_gallery_open(output_dir):
     # The LoRAs / Models catalogue (Asset Browser tabs), built in the background.
     try:
         threading.Thread(target=ab_build_catalog,
-                         args=(output_dir, cz_pipeline.LORAS_DIR, cz_pipeline._checkpoint_dirs()),
+                         args=(output_dir, cz_pipeline._lora_dirs(), cz_pipeline._checkpoint_dirs()),
                          daemon=True).start()
     except Exception as e:
         _dbg(f"catalog build spawn failed: {e}")
@@ -1525,7 +1536,7 @@ def _asset_focus_url(kind, name):
     # The catalogue is built SYNCHRONOUSLY here (it is fast: no hashing) so that the
     # target is present in loras.json/models.json by the time the SPA focuses on it.
     try:
-        ab_build_catalog(out_dir, cz_pipeline.LORAS_DIR, cz_pipeline._checkpoint_dirs())
+        ab_build_catalog(out_dir, cz_pipeline._lora_dirs(), cz_pipeline._checkpoint_dirs())
     except Exception as e:
         _dbg(f"catalog build (focus) failed: {e}")
     focus = ""
@@ -1589,7 +1600,7 @@ def _civitai_model_path(rel, kind):
     rel = str(rel or "").strip()
     if not rel:
         return ""
-    return (os.path.join(cz_pipeline.LORAS_DIR, rel) if kind == "loras"
+    return (cz_pipeline.resolve_lora_path(rel) if kind == "loras"
             else cz_pipeline.resolve_checkpoint(rel))
 
 
@@ -1612,7 +1623,7 @@ def _api_civitai_fetch(rel, kind):
             try:
                 res = cz_civitai.fetch_civitai_for_model(path, progress=_progress)
                 try:
-                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
+                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline._lora_dirs(),
                                      cz_pipeline._checkpoint_dirs())
                 except Exception as e:
                     _dbg(f"catalog rebuild after civitai fetch failed: {e}")
@@ -1648,7 +1659,7 @@ def _api_thumbs_rebuild(kind):
             try:
                 _allow_runtime_path(DEFAULT_OUTPUT_DIR)
                 res = rebuild_thumbs(kind, DEFAULT_OUTPUT_DIR,
-                                     loras_dir=cz_pipeline.LORAS_DIR,
+                                     loras_dir=cz_pipeline._lora_dirs(),
                                      checkpoints_dir=cz_pipeline._checkpoint_dirs(),
                                      force=True, progress=_progress)
                 _bg_job_set(key, phase="done", done=True, ok=True, summary=res,
@@ -1698,10 +1709,10 @@ def _api_civitai_fetch_all(kind):
                     # the LIVE folders (changeable in the UI), the EXTRA checkpoints
                     # folder included: the catalogue shows it, so "fetch all missing" must
                     # cover it. One LoRA folder in this fork -> it is the whole list.
-                    loras_dir=cz_pipeline.LORAS_DIR,
+                    loras_dir=cz_pipeline._lora_dirs(),
                     checkpoints_dir=cz_pipeline._checkpoint_dirs())
                 try:
-                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline.LORAS_DIR,
+                    ab_build_catalog(DEFAULT_OUTPUT_DIR, cz_pipeline._lora_dirs(),
                                      cz_pipeline._checkpoint_dirs())
                 except Exception as e:
                     _dbg(f"catalog rebuild after batch failed: {e}")
@@ -1794,6 +1805,67 @@ def _vram_hint(e):
     return ("  \n**VRAM full**, even after clearing the cache: close the other GPU apps "
             "(ComfyUI...), lower Image number, the upscale factor or the number of "
             "references. If the next render fails too, restart crispz-krea.")
+
+
+def _with_live_preview(fn):
+    """Makes a Generate handler show the image AS IT FORMS, in the result gallery.
+
+    The denoise drops a small projection of its latents into cz_pipeline at every step
+    (preview_snapshot). This wrapper turns the handler into a generator: it runs `fn` in
+    a thread and, while that thread works, hands each new frame to the gallery -- the
+    three other outputs left alone. The finished images then replace the last frame.
+
+    ONE component, ONE event writing it. An earlier design streamed the preview into a
+    second component from a SECOND event on the same button, because two concurrent
+    events writing the same output race and the loser could be the finished image. That
+    race cannot happen here: the frames and the result come out of the same generator,
+    in order.
+
+    `fn` keeps its fifteen exits untouched -- avoiding that rewrite is the whole point of
+    wrapping. The price is the worker thread: gradio's progress bar lives in context
+    variables bound to the calling thread, so the context is COPIED into it. Without that
+    copy, progress() there does nothing at all, silently.
+
+    With the live preview turned off in the config, the old direct call is used: no
+    thread, no generator behaviour change to inherit.
+"""
+    @functools.wraps(fn)
+    def _wrapped(*a, **kw):
+        if not cz_pipeline.LIVE_PREVIEW_ENABLED:
+            cz_pipeline.preview_begin()
+            try:
+                yield fn(*a, **kw)
+            finally:
+                cz_pipeline.preview_end()
+            return
+        box = {}
+
+        def _run():
+            try:
+                box["out"] = fn(*a, **kw)
+            except BaseException as exc:        # noqa: BLE001 - re-raised as is
+                box["err"] = exc
+
+        cz_pipeline.preview_begin()
+        worker = threading.Thread(target=contextvars.copy_context().run, args=(_run,),
+                                  name="cz-generate", daemon=True)
+        worker.start()
+        try:
+            last, n = -1, 0
+            while worker.is_alive():
+                p = cz_pipeline.preview_snapshot()
+                if p["img"] is not None and p["seq"] != last:
+                    last, n = p["seq"], n + 1
+                    yield [p["img"]], gr.update(), gr.update(), gr.update()
+                worker.join(_LIVE_PREVIEW_POLL)   # wakes as soon as the render is done
+        finally:
+            worker.join()
+            cz_pipeline.preview_end()
+        _dbg(f"live preview: {n} frame(s) shown")
+        if "err" in box:
+            raise box["err"]
+        yield box["out"]
+    return _wrapped
 
 
 def _ui_generate(prompt, negative, styles, style_random, use_input, input_image,
@@ -4068,6 +4140,13 @@ def build_ui():
 
                         with gr.Accordion("\U0001F9E9 LoRA (combinable)", open=False):
                             lora_dir_tb = gr.Textbox(value=cz_pipeline.LORAS_DIR, label="LoRA folder")
+                            lora_extra_dirs_tb = gr.Textbox(
+                                value=";".join(cz_pipeline.LORAS_EXTRA_DIRS),
+                                label="Extra LoRA folders (optional, ';' separated)",
+                                placeholder="e.g. F:\\sdlibs\\models\\Lora\\_shared",
+                                info="Merged into the LoRA lists (slots, Asset Browser, "
+                                     "CivitAI enrichment). Same file name: the main folder "
+                                     "wins. Config `loras_extra_dirs`.")
                             gr.Markdown(
                                 "*Number of slots is set in Advanced > Generation "
                                 "(LoRA slots), or config `lora_slots`. Weight range is "
@@ -4231,6 +4310,17 @@ def build_ui():
                             info="Batch: each image takes the NEXT line of the wildcard file "
                                  "(deterministic) instead of a random one.")
                         wild_order_status = gr.Markdown("")
+                        live_preview_cb = gr.Checkbox(
+                            value=cz_pipeline.LIVE_PREVIEW_ENABLED,
+                            label="Live preview while rendering",
+                            info="Show the image as it forms, in the Result gallery, during "
+                                 "the denoise. The latents are projected to RGB through a "
+                                 "16x3 matrix -- about 1.5 ms a step, where a real VAE decode "
+                                 "would nearly double an 8-step Turbo render. It is an "
+                                 "approximation: composition and broad colours are right, fine "
+                                 "detail is not. Off removes the whole thing (no callback on "
+                                 "the denoise, no frames). Applied live; config "
+                                 "`live_preview.enabled` sets the startup value.")
                         save_pre_upscale_cb = gr.Checkbox(
                             value=bool(CONFIG.get("save_pre_upscale", False)),
                             label="Also save pre-upscale image",
@@ -4299,6 +4389,7 @@ def build_ui():
         meta_scheme_dd.change(set_metadata_scheme, [meta_scheme_dd], [meta_scheme_status])
         wildcards_order_cb.change(set_wildcards_in_order, [wildcards_order_cb], [wild_order_status])
         save_pre_upscale_cb.change(cz_pipeline.set_save_pre_upscale, [save_pre_upscale_cb], None)
+        live_preview_cb.change(cz_pipeline.set_live_preview, [live_preview_cb], None)
         detail_faces_cb.change(cz_detailer.set_enabled, [detail_faces_cb], None)
         detailer_denoise_sl.change(_ui_set_detailer_denoise, [detailer_denoise_sl], None)
         detail_hands_cb.change(cz_detailer.set_hands_enabled, [detail_hands_cb], None)
@@ -4329,7 +4420,8 @@ def build_ui():
         te_t5_dd.change(lambda s: _ui_set_text_encoder("text_encoder_2", s), [te_t5_dd], [te_status])
         te_clip_dd.change(lambda s: _ui_set_text_encoder("text_encoder", s), [te_clip_dd], [te_status])
         te_refresh_btn.click(_ui_refresh_text_encoders, None, [te_t5_dd, te_clip_dd])
-        lora_refresh_btn.click(_refresh_loras, [lora_dir_tb], lora_dds + [lora_status])
+        lora_refresh_btn.click(_refresh_loras, [lora_dir_tb, lora_extra_dirs_tb],
+                               lora_dds + [lora_status])
         # slots entrelaces: dd1, lw1, dd2, lw2, ... (attendu par _apply_loras/_ui_loras_apply)
         _lora_slots = [c for _pair in zip(lora_dds, lora_lws) for c in _pair]
         for _c in lora_dds:
@@ -4450,7 +4542,11 @@ def build_ui():
                        tile, overlap, refine_tile, refine_overlap, save_mode, output_dir, output_format,
                        history, auto_upscale_cb]
         _gen_outputs = [out, report, history, history_gallery]
-        btn.click(_ui_generate, inputs=_gen_inputs, outputs=_gen_outputs)
+        # show_progress_on=report: gradio's spinner COVERS every output component
+        # while the event runs, and this one yields a frame per denoise step -- the
+        # gallery would strobe, image and spinner replacing each other all the way.
+        btn.click(_with_live_preview(_ui_generate), inputs=_gen_inputs,
+                  outputs=_gen_outputs, show_progress_on=[report])
         if JOB_QUEUE_ENABLED:
             _q_panel = [queue_state, queue_sel, queue_md, queue_add_btn]
             queue_add_btn.click(_ui_queue_add, [*_gen_inputs, queue_state], _q_panel)

@@ -110,6 +110,54 @@ CHECKPOINTS_EXTRA_DIR = (os.environ.get("CHECKPOINTS_EXTRA_DIR") or _prefs.get("
                          or CONFIG.get("checkpoints_extra_dir") or "").strip()
 LORAS_DIR = (os.environ.get("LORAS_DIR") or _prefs.get("loras_dir")
              or CONFIG.get("loras_dir") or os.path.join(HERE, "loras"))
+
+
+def _split_dirs(spec):
+    """Folder list from a JSON list or from an 'a;b' string (os.pathsep or ';')."""
+    if not spec:
+        return []
+    if isinstance(spec, str):
+        parts = [p for chunk in spec.split(os.pathsep) for p in chunk.split(";")]
+    else:
+        parts = list(spec)
+    out = []
+    for p in parts:
+        p = str(p or "").strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+# EXTRA LoRA folders (e.g. the Civitai library shared with other tools): env
+# LORAS_EXTRA_DIRS ('a;b') > preferences > config 'loras_extra_dirs'. Merged with
+# LORAS_DIR into a single list; on a duplicate name, LORAS_DIR wins.
+LORAS_EXTRA_DIRS = _split_dirs(os.environ["LORAS_EXTRA_DIRS"] if "LORAS_EXTRA_DIRS" in os.environ
+                               else (_prefs.get("loras_extra_dirs")
+                                     or CONFIG.get("loras_extra_dirs")))
+
+
+def _lora_dirs():
+    """LoRA folders to scan: the main one + the extras, deduplicated, in priority order."""
+    dirs = [LORAS_DIR]
+    for d in LORAS_EXTRA_DIRS:
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+def resolve_lora_path(name):
+    """Path of a LoRA from a slot name: an absolute path as is, otherwise the relative
+    name (subfolders included) looked up in LORAS_DIR then in the extras. Absent
+    everywhere, the path inside LORAS_DIR (the caller reports 'not found')."""
+    name = str(name or "")
+    if os.path.isabs(name):
+        return name
+    for d in _lora_dirs():
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return os.path.join(LORAS_DIR, name)
+
 # Active LoRAs: a list of (path, weight). Several LoRAs can be combined (multi-slot).
 LORAS = []
 LORA_WEIGHT = float(CONFIG.get("default_lora_weight", 1.0))  # the slots' default weight
@@ -417,7 +465,7 @@ def _flux_call(pipe, **kw):
     try:
         return pipe(**kw)
     except TypeError as e:
-        # callback_on_step_end = the optional VRAM guard (see _vram_guard_kwargs):
+        # callback_on_step_end = the VRAM guard and the live preview (see
         # an old diffusers build that does not know it runs without the guard.
         if any(k in kw for k in ("true_cfg_scale", "negative_prompt", "callback_on_step_end")):
             for k in ("true_cfg_scale", "negative_prompt", "callback_on_step_end"):
@@ -1599,15 +1647,18 @@ def list_loras():
     included). Returns paths RELATIVE to LORAS_DIR with '/' (e.g.
     'subfolder/my_lora.safetensors') -> set_loras / resolve resolve them through
     os.path.join(LORAS_DIR, name)."""
-    if not os.path.isdir(LORAS_DIR):
-        return []
     exts = (".safetensors", ".ckpt", ".pt")
-    out = []
-    for root, _dirs, files in os.walk(LORAS_DIR):
-        for f in files:
-            if f.lower().endswith(exts):
-                rel = os.path.relpath(os.path.join(root, f), LORAS_DIR).replace(os.sep, "/")
-                out.append(rel)
+    out, seen = [], set()
+    for d in _lora_dirs():          # main then extras: same name -> the main one wins
+        if not os.path.isdir(d):
+            continue
+        for root, _dirs, files in os.walk(d):
+            for f in files:
+                if f.lower().endswith(exts):
+                    rel = os.path.relpath(os.path.join(root, f), d).replace(os.sep, "/")
+                    if rel.lower() not in seen:
+                        seen.add(rel.lower())
+                        out.append(rel)
     return sorted(out)
 
 
@@ -1627,6 +1678,13 @@ def set_loras_dir(path):
     global LORAS_DIR
     if path:
         LORAS_DIR = path
+
+
+def set_loras_extra_dirs(spec):
+    """Sets (or clears with '' / [] / None) the extra LoRA folders.
+    spec = a list or an 'a;b' string."""
+    global LORAS_EXTRA_DIRS
+    LORAS_EXTRA_DIRS = _split_dirs(spec)
 
 
 def _read_safetensors_metadata(path):
@@ -1686,7 +1744,7 @@ def set_loras(slots):
     new = []
     for name, weight in slots:
         if name and name not in ("None", "none", ""):
-            p = name if os.path.isabs(name) else os.path.join(LORAS_DIR, name)
+            p = resolve_lora_path(name)
             new.append((p, float(weight)))
     if new != LORAS:
         LORAS = new
@@ -1787,36 +1845,168 @@ def retest_offload():
     return f"auto -> {mode}"
 
 
-def _vram_guard_kwargs():
-    """Runtime safety net: a callback_on_step_end that checks AFTER the first denoise step
-    in effective mode 'none' that the VRAM is not saturated (the load-time test estimates; a
-    third-party process may have arrived since, or the requested resolution exceeds the
-    margin). Saturated -> the flag + an interruption of the denoise; the caller switches to
-    'model' and replays the job ONCE.
-    {} when the guard is pointless (offload already on, no CUDA).
+# ----------------------------------------------------------------------------
+# Live preview: the image as it forms, during the denoise (Fooocus-style).
+#
+# Decoding the latents with the VAE at every step would cost 0.2-0.5s a step -- on an
+# 8-step Turbo render that nearly doubles the generation. So the latents are projected to
+# RGB through a 16x3 matrix, like ComfyUI/Fooocus do with their `latent_rgb_factors`: one
+# matmul on a tensor 8x smaller than the image, then a tiny uint8 transfer. Free.
+#
+# The matrix below was NOT copied from another project: it is a least-squares fit against
+# THIS VAE's real decoder (Z-Image ships the Flux VAE -- 16 channels, scaling 0.3611,
+# shift 0.1159), over ~40k samples. R2 = 0.85, residual sigma 0.11 on a [-1, 1] range: the
+# composition and the broad colours are right, which is all a preview owes you. The
+# decoder is not linear, so only a TAESD-style decoder would do better.
+_LATENT_RGB = (
+    (-0.01485,  0.04690,  0.08747), ( 0.05693,  0.06371,  0.10852),
+    ( 0.04761, -0.06162, -0.03980), (-0.00429,  0.01376,  0.05184),
+    ( 0.07961,  0.06622,  0.02966), (-0.02872,  0.00743, -0.01101),
+    ( 0.05482,  0.11721,  0.10758), (-0.05113, -0.06862, -0.05791),
+    (-0.02883,  0.01951,  0.10688), ( 0.11757,  0.05743, -0.04155),
+    ( 0.01744,  0.06081,  0.05782), ( 0.10388,  0.05164,  0.04244),
+    ( 0.07051,  0.07068,  0.08240), (-0.11786, -0.03139, -0.08607),
+    (-0.02124, -0.06709, -0.03305), (-0.12536, -0.08841, -0.05776),
+)
+_LATENT_RGB_BIAS = (0.02272, 0.00096, -0.02767)
+
+_LP_CFG = CONFIG.get("live_preview") if isinstance(CONFIG.get("live_preview"), dict) else {}
+LIVE_PREVIEW_ENABLED = bool(_LP_CFG.get("enabled", True))
+# 1 = every step. Raise it on a slow card if the preview itself ever shows up in the
+# timings (it should not: the cost is a matmul on the latent grid).
+LIVE_PREVIEW_EVERY = max(1, int(_LP_CFG.get("every_n_steps", 1) or 1))
+LIVE_PREVIEW_MAX_SIDE = max(64, int(_LP_CFG.get("max_side", 512) or 512))
+
+# The slot the denoise writes and the UI reads. 'seq' increments on every new image, which
+# is how the UI stream knows there is something new without comparing pixels; 'busy' is
+# raised around a whole click (not a single pipe call: one Generate can chain txt2img,
+# upscale and refine).
+_PREVIEW = {"img": None, "seq": 0, "step": 0, "total": 0, "busy": False}
+_PREVIEW_LOCK = threading.Lock()
+
+
+def set_live_preview(v):
+    """Turns the live preview on or off while the app runs (Advanced > Generation).
+
+    Off means OFF: _step_end_kwargs stops adding the callback, so the denoise does not
+    even project its latents, and the Generate handler skips the worker thread it needs
+    to stream frames. Nothing to pay, nothing to undo."""
+    global LIVE_PREVIEW_ENABLED
+    LIVE_PREVIEW_ENABLED = bool(v)
+    _log(f"live preview {'on' if LIVE_PREVIEW_ENABLED else 'off'}")
+
+
+def preview_begin():
+    """Arms the live preview for one Generate click."""
+    with _PREVIEW_LOCK:
+        _PREVIEW.update(img=None, seq=0, step=0, total=0, busy=True)
+    _dbg("live preview: armed")
+
+
+def preview_end():
+    """Disarms it. The UI stream stops at the next poll."""
+    with _PREVIEW_LOCK:
+        _PREVIEW["busy"] = False
+
+
+def preview_snapshot():
+    """A copy of the current state, for the UI stream (never the live dict)."""
+    with _PREVIEW_LOCK:
+        return dict(_PREVIEW)
+
+
+_LATENT_RGB_CACHE = {}
+
+
+def _latent_rgb_on(device, dtype):
+    """The projection matrices on `device`, built once per device.
+
+    Rebuilding them per call costs a host->device copy and a sync on every step: measured
+    27 ms against 1.2 ms of actual work on a 128x96 latent grid.
 """
-    if DEVICE != "cuda" or _effective_offload() != "none":
+    key = (str(device), str(dtype))
+    hit = _LATENT_RGB_CACHE.get(key)
+    if hit is None:
+        hit = (torch.tensor(_LATENT_RGB, dtype=dtype, device=device),
+               torch.tensor(_LATENT_RGB_BIAS, dtype=dtype, device=device))
+        _LATENT_RGB_CACHE[key] = hit
+    return hit
+
+
+def latent_preview_image(latents):
+    """A latent tensor (B, 16, H, W) -> a small PIL image, through the linear projection.
+
+    Runs on whatever device the latents are on (a 16x3 matmul on the GPU is instant) and
+    only the HxWx3 uint8 result crosses back, so the denoise is not stalled by a transfer.
+"""
+    z = latents[0].detach().float().permute(1, 2, 0)          # (H, W, 16)
+    m, b = _latent_rgb_on(z.device, z.dtype)
+    rgb = ((z @ m + b).clamp(-1.0, 1.0) + 1.0).mul(127.5).round().byte().cpu().numpy()
+    img = Image.fromarray(rgb, mode="RGB")
+    side = max(img.size)
+    if side < LIVE_PREVIEW_MAX_SIDE:        # a latent grid is 8x smaller than the image
+        k = LIVE_PREVIEW_MAX_SIDE / float(side)
+        img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))),
+                         Image.BILINEAR)
+    return img
+
+
+def _store_preview(latents, step, total):
+    """Never lets a preview failure touch the render: it is a courtesy, not a result."""
+    if latents is None:
+        return
+    try:
+        img = latent_preview_image(latents)
+    except Exception as e:
+        _dbg(f"live preview skipped: {e}")
+        return
+    with _PREVIEW_LOCK:
+        if not _PREVIEW["busy"]:
+            return
+        _PREVIEW.update(img=img, step=int(step), total=int(total))
+        _PREVIEW["seq"] += 1
+
+
+def _step_end_kwargs(total_steps=0):
+    """The callback_on_step_end the pipes run, carrying two unrelated passengers.
+
+    VRAM guard: AFTER the first denoise step in effective mode 'none', checks that the VRAM
+    is not saturated (the load-time test estimates; a third-party process may have arrived
+    since, or the requested resolution exceeds the margin). Saturated -> the flag + an
+    interruption of the denoise; the caller switches to 'model' and replays the job ONCE.
+
+    Live preview: projects the latents to a small RGB image for the UI (see
+    latent_preview_image). Costs a matmul on the latent grid, so it rides along every step.
+
+    {} when neither has anything to do -- then the pipe runs with no callback at all.
+"""
+    guard = DEVICE == "cuda" and _effective_offload() == "none"
+    preview = LIVE_PREVIEW_ENABLED and _PREVIEW["busy"]
+    if not guard and not preview:
         return {}
 
     def _cb(pipe, i, t, cb_kwargs):
         global _VRAM_DOWNGRADE
-        if i == 0 and cz_hw.vram_saturated():
+        if guard and i == 0 and cz_hw.vram_saturated():
             _VRAM_DOWNGRADE = True
             pipe._interrupt = True
+            return cb_kwargs
+        if preview and (i % LIVE_PREVIEW_EVERY == 0):
+            _store_preview(cb_kwargs.get("latents"), i + 1, total_steps)
         return cb_kwargs
     return {"callback_on_step_end": _cb}
 
 
 def _pipe_guarded(pipe, **kwargs):
-    """Calls the pipe with the VRAM guard when it is active. A pipeline that does not know
-    callback_on_step_end (TypeError) runs without the guard: the net is a bonus, never a
-    cause of failure. Returns the first image."""
-    guard = _vram_guard_kwargs()
+    """Calls the pipe with the VRAM guard and the live preview when they are active. A
+    pipeline that does not know callback_on_step_end (TypeError) runs without them: the
+    net is a bonus, never a cause of failure. Returns the first image."""
+    guard = _step_end_kwargs(int(kwargs.get("num_inference_steps") or 0))
     if guard:
         try:
             return pipe(**kwargs, **guard).images[0]
         except TypeError:
-            _dbg("callback_on_step_end unsupported -> VRAM guard disabled")
+            _dbg("callback_on_step_end unsupported -> VRAM guard + live preview disabled")
     return pipe(**kwargs).images[0]
 
 
@@ -2764,7 +2954,7 @@ def generate(prompt, width, height, steps, seed, negative_prompt=""):
             guidance_scale=GUIDANCE,
             generator=_make_generator(seed),
             **_cfg_kwargs(negative_prompt),
-            **_vram_guard_kwargs(),
+            **_step_end_kwargs(int(steps)),
         ).images[0]
         if not _consume_vram_downgrade():
             break

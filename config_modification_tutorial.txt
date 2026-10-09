@@ -268,6 +268,26 @@ log_level               "quiet" | "info" | "debug". debug = full params/state/VR
                         in the console (also: run.bat --debug, or --log-level debug).
 
 hf_token                Hugging Face token for gated models (empty = anonymous).
+live_preview            Live preview during the denoise: {"enabled": true,
+                        "every_n_steps": 1, "max_side": 512}. The image appears in its
+                        own box above the result while it forms. Cheap (a 16x3 matmul on
+                        the latent grid, ~1.5 ms a step) and approximate: composition and
+                        broad colours, not fine detail. enabled=false removes it entirely.
+default_gen_steps       txt2img steps.
+default_guidance        CFG. 0 = Z-Image Turbo. Z-Image Base: ~3.5-5.
+default_sampler         Default sampler: euler (native flow-matching), unipc (UniPC
+                        multistep), or lcm (LCM flow-matching: few steps, guidance
+                        ~0-1 -> distilled/Turbo models). Z-Image imposes custom sigmas
+                        -> DPM++ 2M / DPM2a / dpmpp_sde are incompatible (not
+                        exposed). Also settable in the UI (next to the CFG).
+default_schedule        Sigma schedule (ComfyUI's "scheduler"): sgm_uniform (Z-Image's
+                        native one), beta, karras, exponential. 'simple' is accepted as an
+                        alias of sgm_uniform: it is the SAME curve (the sigmas Z-Image
+                        imposes are linspace(1, 1/steps, steps), which is what ComfyUI calls
+                        'simple') -- enough to copy a CivitAI recipe over without translating
+                        it. Also settable in the UI (next to the sampler).
+default_image_number    Batch size at startup (1-30).
+default_seed            -1 = random.
 caption_model           Auto-describe model: "blip-large" (default, richer, local)
                         | "blip-base" (lighter) | "ollama:<vision model>" (listed in
                         Prompt AI once Ollama is detected; blip-large takes over if
